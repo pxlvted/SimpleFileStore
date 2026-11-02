@@ -12,7 +12,7 @@
   <main id="auth" class="auth-page hidden">
     <section class="auth-card">
       <div class="brand-mark">S</div>
-      <p class="eyebrow">PRIVATE CLOUD STORAGE</p>
+      <p class="eyebrow">SIMPLE FILE STORE</p>
       <h1 id="auth-title">Welcome back</h1>
       <p class="muted" id="auth-description">Sign in to your private file space.</p>
       <form id="auth-form">
@@ -23,14 +23,14 @@
         <button class="button primary full" id="auth-submit" type="submit">Sign in</button>
       </form>
       <p class="auth-switch muted"><span id="auth-switch-label">New here?</span> <button class="text-button" id="auth-switch" type="button">Create an account</button></p>
-      <p class="scanner-note">Files are private and available only after the built-in scanner completes. A passed scan is not a guarantee of safety.</p>
+      <p class="scanner-note">Files are checked before access. Scanning cannot guarantee a file is safe.</p>
     </section>
   </main>
 
   <div id="application" class="app-shell hidden">
     <aside class="sidebar">
       <a class="brand" href="#" data-mode="folder" data-folder="">
-        <span class="brand-mark small">S</span><span>SimpleStore</span>
+        <span class="brand-mark small">S</span><span>Simple Store</span>
       </a>
       <button class="button primary upload-trigger" id="upload-button" type="button"><span>＋</span> Upload files</button>
       <input id="file-picker" type="file" multiple hidden>
@@ -47,7 +47,7 @@
         <div class="storage-track"><span id="storage-bar"></span></div>
         <p id="storage-text">Loading storage…</p>
       </section>
-      <div class="sidebar-footer"><span class="status-dot"></span> Private workspace</div>
+      <div class="sidebar-footer">Private file storage</div>
     </aside>
 
     <section class="main-panel">
@@ -61,10 +61,10 @@
       </header>
       <section class="content">
         <div class="page-heading">
-          <div><p class="eyebrow" id="section-eyebrow">YOUR SPACE</p><h1 id="page-title">My files</h1><div id="breadcrumbs" class="breadcrumbs"></div></div>
+          <div><p class="eyebrow" id="section-eyebrow"></p><h1 id="page-title">My files</h1><div id="breadcrumbs" class="breadcrumbs"></div></div>
           <div class="heading-actions"><button class="button secondary" id="new-folder" type="button">＋ New folder</button><div class="view-toggle"><button class="view-option selected" data-view="list" aria-label="List view">☷</button><button class="view-option" data-view="grid" aria-label="Grid view">▦</button></div></div>
         </div>
-        <p class="scan-disclaimer">A passed scan means no configured threats were detected; it does not guarantee a file is safe.</p>
+        <p class="scan-disclaimer">Basic file scanning is enabled. A clean result does not guarantee a file is safe.</p>
         <div id="upload-status" class="upload-status hidden"></div>
         <div id="file-area" class="file-area">
           <div class="drop-overlay" id="drop-overlay">Drop files to upload</div>
@@ -80,14 +80,14 @@
     </section>
   </div>
   <div id="editor" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="editor-title">
-    <section class="editor-modal"><header><div><p class="eyebrow">TEXT EDITOR</p><h2 id="editor-title">Edit file</h2></div><button class="icon-button" id="editor-close" aria-label="Close editor">×</button></header><textarea id="editor-content" spellcheck="false"></textarea><footer><span id="editor-message" class="muted">Changes are rescanned before becoming available.</span><button class="button secondary" id="editor-cancel">Cancel</button><button class="button primary" id="editor-save">Save and scan</button></footer></section>
+    <section class="editor-modal"><header><div><h2 id="editor-title">Edit file</h2></div><button class="icon-button" id="editor-close" aria-label="Close editor">×</button></header><textarea id="editor-content" spellcheck="false"></textarea><footer><span id="editor-message" class="muted">Changes are checked before they are available.</span><button class="button secondary" id="editor-cancel">Cancel</button><button class="button primary" id="editor-save">Save and scan</button></footer></section>
   </div>
   <div id="move-dialog" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="move-title">
-    <section class="move-modal"><header><div><p class="eyebrow">ORGANIZE FILES</p><h2 id="move-title">Move item</h2></div><button class="icon-button" id="move-close" aria-label="Close move dialog">×</button></header><label for="move-destination">Destination folder</label><select id="move-destination"></select><footer><button class="button secondary" id="move-cancel">Cancel</button><button class="button primary" id="move-confirm">Move here</button></footer></section>
+    <section class="move-modal"><header><div><h2 id="move-title">Move item</h2></div><button class="icon-button" id="move-close" aria-label="Close move dialog">×</button></header><label for="move-destination">Destination folder</label><select id="move-destination"></select><footer><button class="button secondary" id="move-cancel">Cancel</button><button class="button primary" id="move-confirm">Move here</button></footer></section>
   </div>
   <div id="share-dialog" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="share-title">
     <section class="share-modal">
-      <header><div><p class="eyebrow">COLLABORATE PRIVATELY</p><h2 id="share-title">Share item</h2></div><button class="icon-button" id="share-close" aria-label="Close share dialog">×</button></header>
+      <header><div><h2 id="share-title">Share item</h2></div><button class="icon-button" id="share-close" aria-label="Close share dialog">×</button></header>
       <label for="share-user-search">Find a registered user</label>
       <input id="share-user-search" type="search" autocomplete="off" placeholder="Search username">
       <div id="share-search-results" class="share-search-results"></div>

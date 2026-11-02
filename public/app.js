@@ -108,7 +108,7 @@ async function loadCurrent() {
     trash: 'Trash', search: 'Search results', storage: 'Storage'
   }[state.mode] || 'My files');
   $('#page-title').textContent = title;
-  $('#section-eyebrow').textContent = state.mode === 'trash' ? 'DELETED ITEMS' : 'YOUR SPACE';
+  $('#section-eyebrow').textContent = state.mode === 'trash' ? 'Trash' : '';
   if (state.mode !== 'storage') $('#storage-page-card')?.classList.add('hidden');
   document.querySelectorAll('.nav-item').forEach((item) => item.classList.toggle(
     'active', item.dataset.mode === state.mode && (state.mode !== 'folder' || (item.dataset.folder || '') === (state.folderId || ''))
@@ -141,7 +141,9 @@ async function loadCurrent() {
     $('#loading').classList.add('hidden');
     renderBreadcrumbs();
     renderFiles();
-    if (state.files.some((file) => ['PENDING_SCAN', 'SCANNING'].includes(file.status))) $('#section-eyebrow').textContent = 'SCANNING FILES';
+    if (state.files.some((file) => ['PENDING_SCAN', 'SCANNING'].includes(file.status))) {
+      $('#section-eyebrow').textContent = 'Files are being scanned';
+    }
   } catch (error) {
     $('#loading').classList.add('hidden');
     toast(error.message, true);
@@ -211,10 +213,9 @@ function makeStatus(file) {
 }
 
 function iconFor(fileName, folder = false) {
-  if (folder) return '▰';
+  if (folder) return 'DIR';
   const extension = fileName.split('.').pop().toLowerCase();
-  const icons = { pdf: '▧', jpg: '▧', jpeg: '▧', png: '▧', gif: '▧', mp4: '▷', mp3: '♫', zip: '▣', docx: '▤', txt: '≡', md: '≡', js: '⌘', json: '{ }' };
-  return icons[extension] || '▤';
+  return extension && extension !== fileName.toLowerCase() ? extension.slice(0, 4).toUpperCase() : 'FILE';
 }
 
 function actionButton(label, action, id, title = label) {
@@ -428,7 +429,7 @@ async function renderStoragePage() {
   }
   const percent = usage.limit ? Math.min(100, usage.used / usage.limit * 100) : 0;
   const level = Math.round(percent / 5);
-  card.innerHTML = `<p class="eyebrow">YOUR ALLOCATION</p><strong>${formatBytes(usage.used)}</strong><p class="muted">of ${formatBytes(usage.limit)} used · ${formatBytes(usage.remaining)} available</p><div class="storage-track"><span class="fill-level-${level}"></span></div><p class="muted">Files in Trash continue to count toward your allocation. Files are scanned before they can be opened or downloaded.</p>`;
+  card.innerHTML = `<p class="eyebrow">Storage</p><strong>${formatBytes(usage.used)}</strong><p class="muted">of ${formatBytes(usage.limit)} used · ${formatBytes(usage.remaining)} available</p><div class="storage-track"><span class="fill-level-${level}"></span></div><p class="muted">Items in Trash still count toward your storage.</p>`;
 }
 
 function setAuthMode(mode) {
@@ -755,7 +756,7 @@ async function loadShareList() {
   if (!result.shares.length) {
     const empty = document.createElement('p');
     empty.className = 'muted share-empty';
-    empty.textContent = 'Only you have access right now.';
+    empty.textContent = 'No one else has access.';
     container.append(empty);
     return;
   }
@@ -787,7 +788,7 @@ async function loadShareList() {
 
 async function openShareDialog(type, item) {
   state.sharing = { type, id: item.id, name: item.name, selectedUser: null };
-  $('#share-title').textContent = `Share ${type}: ${item.name}`;
+  $('#share-title').textContent = `Share “${item.name}”`;
   $('#share-user-search').value = '';
   $('#share-search-results').replaceChildren();
   $('#share-selected-user').classList.add('hidden');
@@ -800,8 +801,8 @@ async function openShareDialog(type, item) {
     label.classList.toggle('hidden', type !== 'folder');
   });
   $('#share-owner-note').textContent = type === 'folder'
-    ? 'Files added to this folder stay owned by you and count toward your storage.'
-    : 'This file stays owned by you and counts toward your storage.';
+    ? 'New items belong to you and use your storage.'
+    : 'This file remains yours and uses your storage.';
   $('#share-dialog').classList.remove('hidden');
   try { await loadShareList(); }
   catch (error) { toast(error.message, true); }
