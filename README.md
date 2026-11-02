@@ -28,8 +28,21 @@ The **Shared with me** navigation lists items shared directly with the signed-in
 
 ## Requirements
 
-- Docker Engine and Docker Compose.
+- Node.js 20 or newer. Docker Engine and Docker Compose are optional.
 - A reverse proxy with HTTPS for remote access. The application serves HTTP internally.
+
+## Run locally with Node.js
+
+Docker is not needed for local development. Install dependencies and start the app:
+
+```sh
+npm ci
+npm start
+```
+
+Open <http://127.0.0.1:3000> and create an account with the username `developer` and a password of at least 12 characters. By default, the development server listens only on your computer, stores its database and files in `./data`, and uses a temporary session secret. You can register additional usernames by setting `WHITELIST` before starting, for example `WHITELIST=alice,bob`.
+
+These defaults apply when `NODE_ENV` is unset or set to `development`, unless you override individual values. If you have a `.env` copied from `.env.example`, it contains production settings for Docker; for local development, set `NODE_ENV=development`, `HOST=127.0.0.1`, `DATA_DIRECTORY=./data`, `COOKIE_SECURE=false`, and `WHITELIST=developer` in that file. Keep Docker's `DATA_DIRECTORY=/app/data` when running Compose.
 
 ## Install
 

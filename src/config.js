@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import crypto from 'node:crypto';
 import path from 'node:path';
 
 function integer(name, fallback, min, max) {
@@ -18,14 +19,20 @@ function boolean(name, fallback) {
   throw new Error(`${name} must be true or false`);
 }
 
-const dataDirectory = path.resolve(process.env.DATA_DIRECTORY || './data');
-const sessionSecret = process.env.SESSION_SECRET || '';
+const environment = process.env.NODE_ENV || 'development';
+const isDevelopment = environment === 'development';
+const dataDirectory = path.resolve(process.env.DATA_DIRECTORY || (isDevelopment ? './data' : '/app/data'));
+const configuredSecret = process.env.SESSION_SECRET || '';
+const sessionSecret = isDevelopment
+  && (!configuredSecret || configuredSecret.includes('replace-with-'))
+  ? crypto.randomBytes(48).toString('hex')
+  : configuredSecret;
 if (sessionSecret.length < 32 || sessionSecret.includes('replace-with-')) {
   throw new Error('SESSION_SECRET must contain at least 32 non-placeholder characters');
 }
 
 const whitelist = new Set(
-  (process.env.WHITELIST || '')
+  (process.env.WHITELIST || (isDevelopment ? 'developer' : ''))
     .split(',')
     .map((username) => username.trim().toLowerCase())
     .filter(Boolean)
@@ -33,13 +40,13 @@ const whitelist = new Set(
 if (whitelist.size === 0) throw new Error('WHITELIST must contain at least one username');
 
 const config = {
-  environment: process.env.NODE_ENV || 'production',
+  environment,
   port: integer('PORT', 3000, 1, 65535),
-  host: process.env.HOST || '0.0.0.0',
+  host: process.env.HOST || (isDevelopment ? '127.0.0.1' : '0.0.0.0'),
   sessionSecret,
   whitelist,
   sessionMaxAgeHours: integer('SESSION_MAX_AGE_HOURS', 24, 1, 720),
-  cookieSecure: boolean('COOKIE_SECURE', true),
+  cookieSecure: boolean('COOKIE_SECURE', !isDevelopment),
   trustProxy: boolean('TRUST_PROXY', false),
   dataDirectory,
   databasePath: path.join(dataDirectory, 'database.sqlite'),
