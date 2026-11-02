@@ -25,6 +25,21 @@ const state = {
 const $ = (selector) => document.querySelector(selector);
 const authPage = $('#auth');
 const application = $('#application');
+const svgNamespace = 'http://www.w3.org/2000/svg';
+
+function createIcon(name, className = 'icon') {
+  const icon = document.createElementNS(svgNamespace, 'svg');
+  icon.classList.add(...className.split(' '));
+  icon.setAttribute('viewBox', '0 0 24 24');
+  icon.setAttribute('width', '18');
+  icon.setAttribute('height', '18');
+  icon.setAttribute('aria-hidden', 'true');
+  icon.setAttribute('focusable', 'false');
+  const use = document.createElementNS(svgNamespace, 'use');
+  use.setAttribute('href', `#icon-${name}`);
+  icon.append(use);
+  return icon;
+}
 
 async function api(url, options = {}) {
   const headers = new Headers(options.headers || {});
@@ -170,7 +185,7 @@ async function renderBreadcrumbs() {
     const path = await api(`/api/folders/${encodeURIComponent(state.folderId)}/path`);
     path.folders.forEach((folder, index) => {
       const separator = document.createElement('span');
-      separator.textContent = '›';
+      separator.append(createIcon('chevron', 'icon breadcrumb-chevron'));
       container.append(separator);
       const crumb = document.createElement('button');
       crumb.textContent = folder.name;
@@ -213,19 +228,25 @@ function makeStatus(file) {
 }
 
 function iconFor(fileName, folder = false) {
-  if (folder) return 'DIR';
+  if (folder) return 'folder';
   const extension = fileName.split('.').pop().toLowerCase();
-  return extension && extension !== fileName.toLowerCase() ? extension.slice(0, 4).toUpperCase() : 'FILE';
+  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg'].includes(extension)) return 'image';
+  if (['mp4', 'mov', 'mkv', 'webm', 'avi'].includes(extension)) return 'video';
+  if (['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac'].includes(extension)) return 'audio';
+  if (['zip', 'gz', '7z', 'rar', 'tar'].includes(extension)) return 'archive';
+  if (['js', 'mjs', 'cjs', 'ts', 'jsx', 'tsx', 'html', 'css', 'json', 'xml', 'yaml', 'yml', 'py', 'c', 'cpp', 'h', 'java', 'sh'].includes(extension)) return 'code';
+  return 'document';
 }
 
-function actionButton(label, action, id, title = label) {
+function actionButton(iconName, action, id, title) {
   const button = document.createElement('button');
   button.type = 'button';
-  button.textContent = label;
   button.title = title;
   button.setAttribute('aria-label', title);
   button.dataset.action = action;
   button.dataset.id = id;
+  button.append(createIcon(iconName));
+  if (action === 'star' && title === 'Unstar file') button.classList.add('is-starred');
   return button;
 }
 
@@ -233,8 +254,9 @@ function fileNameCell(name, folder, itemId, status, detection) {
   const wrapper = document.createElement('div');
   wrapper.className = 'file-name';
   const icon = document.createElement('span');
-  icon.className = `file-icon${folder ? ' folder' : ''}`;
-  icon.textContent = iconFor(name, folder);
+  const iconName = iconFor(name, folder);
+  icon.className = `file-icon${folder ? ' folder' : ''} file-icon-${iconName}`;
+  icon.append(createIcon(iconName));
   const info = document.createElement('div');
   const title = document.createElement(folder ? 'button' : 'span');
   title.className = 'file-title';
@@ -276,10 +298,10 @@ function actionsForFolder(folder) {
   const actions = document.createElement('div');
   actions.className = 'row-actions';
   if (folder.isOwner) {
-    actions.append(actionButton('⇢', 'move-folder', folder.id, 'Move folder'));
-    actions.append(actionButton('✎', 'rename-folder', folder.id, 'Rename folder'));
-    actions.append(actionButton('⌫', 'delete-folder', folder.id, 'Move folder to Trash'));
-    actions.append(actionButton('♧', 'share-folder', folder.id, 'Share folder'));
+    actions.append(actionButton('move', 'move-folder', folder.id, 'Move folder'));
+    actions.append(actionButton('edit', 'rename-folder', folder.id, 'Rename folder'));
+    actions.append(actionButton('trash', 'delete-folder', folder.id, 'Move folder to Trash'));
+    actions.append(actionButton('share', 'share-folder', folder.id, 'Share folder'));
   }
   return actions;
 }
@@ -289,24 +311,24 @@ function actionsForFile(file) {
   actions.className = 'row-actions';
   if (state.mode === 'trash') {
     if (file.status === 'SCAN_PASSED' || ['PENDING_SCAN', 'SCANNING'].includes(file.status)) {
-      actions.append(actionButton('↶', 'restore', file.id, 'Restore file'));
+      actions.append(actionButton('restore', 'restore', file.id, 'Restore file'));
     }
-    actions.append(actionButton('×', 'purge', file.id, 'Permanently delete'));
+    actions.append(actionButton('close', 'purge', file.id, 'Permanently delete'));
     return actions;
   }
   if (file.status === 'SCAN_PASSED' && file.deletedAt === null) {
-    if (file.isOwner) actions.append(actionButton(file.starred ? '★' : '☆', 'star', file.id, file.starred ? 'Unstar file' : 'Star file'));
-    if (file.permissions?.canRemove) actions.append(actionButton('⇢', 'move-file', file.id, 'Move file'));
-    actions.append(actionButton('↓', 'download', file.id, 'Download file'));
+    if (file.isOwner) actions.append(actionButton('star', 'star', file.id, file.starred ? 'Unstar file' : 'Star file'));
+    if (file.permissions?.canRemove) actions.append(actionButton('move', 'move-file', file.id, 'Move file'));
+    actions.append(actionButton('download', 'download', file.id, 'Download file'));
     if (file.permissions?.canEdit && ['txt', 'md', 'json', 'html', 'css', 'js', 'xml', 'csv', 'yaml', 'yml', 'log'].includes(file.name.split('.').pop().toLowerCase())) {
-      actions.append(actionButton('✎', 'edit', file.id, 'Edit text file'));
+      actions.append(actionButton('edit', 'edit', file.id, 'Edit text file'));
     }
-    if (file.permissions?.canRemove) actions.append(actionButton('⌫', 'trash', file.id, 'Move to Trash'));
+    if (file.permissions?.canRemove) actions.append(actionButton('trash', 'trash', file.id, 'Move to Trash'));
   } else if (file.status !== 'QUARANTINED' && file.permissions?.canRemove) {
-    actions.append(actionButton('⌫', 'trash', file.id, 'Move to Trash'));
+    actions.append(actionButton('trash', 'trash', file.id, 'Move to Trash'));
   }
   if (file.isOwner && state.mode !== 'trash') {
-    actions.append(actionButton('♧', 'share-file', file.id, 'Share file'));
+    actions.append(actionButton('share', 'share-file', file.id, 'Share file'));
   }
   return actions;
 }
@@ -957,10 +979,20 @@ $('#logout-button').addEventListener('click', async () => {
 
 const savedTheme = localStorage.getItem('theme');
 if (savedTheme === 'dark') document.documentElement.dataset.theme = 'dark';
+function updateThemeButton() {
+  const isDark = document.documentElement.dataset.theme === 'dark';
+  const toggle = $('#theme-toggle');
+  toggle.querySelector('use').setAttribute('href', `#icon-${isDark ? 'sun' : 'moon'}`);
+  const label = `Switch to ${isDark ? 'light' : 'dark'} theme`;
+  toggle.setAttribute('aria-label', label);
+  toggle.title = label;
+}
+updateThemeButton();
 $('#theme-toggle').addEventListener('click', () => {
   const dark = document.documentElement.dataset.theme !== 'dark';
   document.documentElement.dataset.theme = dark ? 'dark' : 'light';
   localStorage.setItem('theme', dark ? 'dark' : 'light');
+  updateThemeButton();
 });
 
 setAuthMode('login');
