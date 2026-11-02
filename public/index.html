@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Simple File Store</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <main id="auth" class="auth-page hidden">
+    <section class="auth-card">
+      <div class="brand-mark">S</div>
+      <p class="eyebrow">PRIVATE CLOUD STORAGE</p>
+      <h1 id="auth-title">Welcome back</h1>
+      <p class="muted" id="auth-description">Sign in to your private file space.</p>
+      <form id="auth-form">
+        <label for="username">Username</label>
+        <input id="username" name="username" autocomplete="username" required minlength="3" maxlength="32">
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required minlength="12">
+        <button class="button primary full" id="auth-submit" type="submit">Sign in</button>
+      </form>
+      <p class="auth-switch muted"><span id="auth-switch-label">New here?</span> <button class="text-button" id="auth-switch" type="button">Create an account</button></p>
+      <p class="scanner-note">Files are private and available only after the built-in scanner completes. A passed scan is not a guarantee of safety.</p>
+    </section>
+  </main>
+
+  <div id="application" class="app-shell hidden">
+    <aside class="sidebar">
+      <a class="brand" href="#" data-mode="folder" data-folder="">
+        <span class="brand-mark small">S</span><span>SimpleStore</span>
+      </a>
+      <button class="button primary upload-trigger" id="upload-button" type="button"><span>＋</span> Upload files</button>
+      <input id="file-picker" type="file" multiple hidden>
+      <nav class="navigation" aria-label="Main navigation">
+        <button class="nav-item active" data-mode="folder" data-folder=""><span>▤</span> My files</button>
+        <button class="nav-item" data-mode="recent"><span>◷</span> Recent</button>
+        <button class="nav-item" data-mode="starred"><span>☆</span> Starred</button>
+        <button class="nav-item" data-mode="shared"><span>⇄</span> Shared with me</button>
+        <button class="nav-item" data-mode="trash"><span>⌫</span> Trash</button>
+        <button class="nav-item" data-mode="storage"><span>◒</span> Storage</button>
+      </nav>
+      <section class="storage-summary">
+        <div class="storage-label"><span>Storage</span><span id="storage-percent">0%</span></div>
+        <div class="storage-track"><span id="storage-bar"></span></div>
+        <p id="storage-text">Loading storage…</p>
+      </section>
+      <div class="sidebar-footer"><span class="status-dot"></span> Private workspace</div>
+    </aside>
+
+    <section class="main-panel">
+      <header class="topbar">
+        <div class="search-wrap"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search in your files" aria-label="Search files"><button id="clear-search" class="icon-button hidden" aria-label="Clear search">×</button></div>
+        <div class="topbar-actions">
+          <button class="icon-button" id="theme-toggle" aria-label="Switch theme" title="Switch theme">◐</button>
+          <button class="profile-button" id="profile-button" type="button"><span class="avatar" id="avatar">U</span><span id="profile-name">User</span><span>⌄</span></button>
+          <div class="profile-menu hidden" id="profile-menu"><button id="logout-button" type="button">Sign out</button></div>
+        </div>
+      </header>
+      <section class="content">
+        <div class="page-heading">
+          <div><p class="eyebrow" id="section-eyebrow">YOUR SPACE</p><h1 id="page-title">My files</h1><div id="breadcrumbs" class="breadcrumbs"></div></div>
+          <div class="heading-actions"><button class="button secondary" id="new-folder" type="button">＋ New folder</button><div class="view-toggle"><button class="view-option selected" data-view="list" aria-label="List view">☷</button><button class="view-option" data-view="grid" aria-label="Grid view">▦</button></div></div>
+        </div>
+        <p class="scan-disclaimer">A passed scan means no configured threats were detected; it does not guarantee a file is safe.</p>
+        <div id="upload-status" class="upload-status hidden"></div>
+        <div id="file-area" class="file-area">
+          <div class="drop-overlay" id="drop-overlay">Drop files to upload</div>
+          <div id="loading" class="loading hidden"><span class="spinner"></span> Loading your files…</div>
+          <div id="empty-state" class="empty-state hidden"><span class="empty-icon">▤</span><h2>Nothing here yet</h2><p>Upload a file or create a folder to get started.</p><button class="button primary" id="empty-upload" type="button">Upload files</button></div>
+          <div class="table-wrap" id="table-wrap">
+            <table class="file-table"><thead><tr><th class="selection-column"><input id="select-all" class="select-file" type="checkbox" aria-label="Select all files"></th><th><button data-sort="name">Name <span class="sort-indicator"></span></button></th><th><button data-sort="size">File size <span class="sort-indicator"></span></button></th><th><button data-sort="modified_at">Modified <span class="sort-indicator"></span></button></th><th>Status</th><th></th></tr></thead><tbody id="file-list"></tbody></table>
+          </div>
+          <div class="bulk-actions hidden" id="bulk-actions"><span id="selection-count">0 selected</span><button class="button secondary" id="bulk-trash" type="button">Move selected to Trash</button></div>
+          <div class="grid-list hidden" id="grid-list"></div>
+        </div>
+      </section>
+    </section>
+  </div>
+  <div id="editor" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="editor-title">
+    <section class="editor-modal"><header><div><p class="eyebrow">TEXT EDITOR</p><h2 id="editor-title">Edit file</h2></div><button class="icon-button" id="editor-close" aria-label="Close editor">×</button></header><textarea id="editor-content" spellcheck="false"></textarea><footer><span id="editor-message" class="muted">Changes are rescanned before becoming available.</span><button class="button secondary" id="editor-cancel">Cancel</button><button class="button primary" id="editor-save">Save and scan</button></footer></section>
+  </div>
+  <div id="move-dialog" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="move-title">
+    <section class="move-modal"><header><div><p class="eyebrow">ORGANIZE FILES</p><h2 id="move-title">Move item</h2></div><button class="icon-button" id="move-close" aria-label="Close move dialog">×</button></header><label for="move-destination">Destination folder</label><select id="move-destination"></select><footer><button class="button secondary" id="move-cancel">Cancel</button><button class="button primary" id="move-confirm">Move here</button></footer></section>
+  </div>
+  <div id="share-dialog" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="share-title">
+    <section class="share-modal">
+      <header><div><p class="eyebrow">COLLABORATE PRIVATELY</p><h2 id="share-title">Share item</h2></div><button class="icon-button" id="share-close" aria-label="Close share dialog">×</button></header>
+      <label for="share-user-search">Find a registered user</label>
+      <input id="share-user-search" type="search" autocomplete="off" placeholder="Search username">
+      <div id="share-search-results" class="share-search-results"></div>
+      <div id="share-selected-user" class="share-selected-user hidden"></div>
+      <fieldset id="share-permissions" class="share-permissions hidden">
+        <legend>Permissions for this user</legend>
+        <label><input type="checkbox" checked disabled> Read files</label>
+        <label class="share-add-option"><input id="share-can-add" type="checkbox"> Add files and folders</label>
+        <label><input id="share-can-remove" type="checkbox"> Remove files</label>
+        <label><input id="share-can-edit" type="checkbox"> Edit text files</label>
+      </fieldset>
+      <div class="existing-shares"><h3>People with access</h3><div id="share-list"></div></div>
+      <footer><span id="share-owner-note" class="muted">Shared files remain owned by you and count toward your storage.</span><button class="button secondary" id="share-cancel">Done</button><button class="button primary" id="share-save" disabled>Save access</button></footer>
+    </section>
+  </div>
+  <div id="toast-region" class="toast-region" aria-live="polite"></div>
+</body>
+</html>

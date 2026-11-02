@@ -1,0 +1,23 @@
+{
+  "name": "simple-file-store",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A single-container, self-hosted private file store.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "busboy": "^1.6.0",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "helmet": "^8.0.0",
+    "yauzl": "^3.2.0"
+  }
+}
