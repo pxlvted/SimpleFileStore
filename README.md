@@ -47,7 +47,7 @@ These defaults apply when `NODE_ENV` is unset or set to `development`, unless yo
 ## Install
 
 1. Copy `.env.example` to `.env`.
-2. Set `WHITELIST` to comma-separated usernames permitted to register.
+2. Set `WHITELIST` to comma-separated usernames permitted to register, and keep `WHITELISTFEATURE=TRUE` to enforce it. Set `WHITELISTFEATURE=FALSE` to allow any valid username to register and sign in.
 3. Generate a unique session secret:
 
    ```sh
@@ -62,7 +62,7 @@ These defaults apply when `NODE_ENV` is unset or set to `development`, unless yo
    docker compose up -d --build
    ```
 
-The service binds to `127.0.0.1:3000` by default. Change `HOST_PORT` to select another host port. Only usernames in `WHITELIST` can register or continue using an existing account; removing a username revokes access but leaves its files in the volume.
+The service binds to `127.0.0.1:3000` by default. Change `HOST_PORT` to select another host port. With `WHITELISTFEATURE=TRUE`, only usernames in `WHITELIST` can register or continue using an existing account; removing a username revokes access but leaves its files in the volume. With `WHITELISTFEATURE=FALSE`, the whitelist is ignored.
 
 Useful commands:
 
@@ -96,7 +96,8 @@ All configuration is read at startup; restart the service after changing `.env`.
 |---|---|
 | `PORT`, `HOST` | Internal listener (Compose expects port 3000). |
 | `SESSION_SECRET` | Required random secret, at least 32 characters. |
-| `WHITELIST` | Case-insensitive allowed registration/login usernames. |
+| `WHITELISTFEATURE` | `TRUE` (default) enforces `WHITELIST`; `FALSE` disables whitelist checks. |
+| `WHITELIST` | Case-insensitive allowed registration/login usernames when whitelist enforcement is enabled. |
 | `SESSION_MAX_AGE_HOURS`, `COOKIE_SECURE`, `TRUST_PROXY` | Session and proxy behavior. |
 | `DATA_DIRECTORY` | Persistent database, file, staging, quarantine, and log root. |
 | `MAX_FILE_SIZE_MB`, `MAX_STORAGE_MB` | Per-file and per-user storage limits. Trash and pending uploads count toward storage. |

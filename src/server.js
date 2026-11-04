@@ -51,6 +51,8 @@ let activeScans = 0;
 let quarantineReservedBytes = 0;
 
 const error = (status, message) => Object.assign(new Error(message), { status });
+const isWhitelisted = (username) => !config.whitelistFeature
+  || config.whitelist.has(username.toLowerCase());
 const getCookie = (request, key) => {
   const cookies = request.headers.cookie || '';
   for (const pair of cookies.split(';')) {
@@ -85,7 +87,7 @@ function authenticate(req, res, next) {
     clearSessionCookie(res);
     return next(error(401, 'Authentication required'));
   }
-  if (!config.whitelist.has(session.username.toLowerCase())) {
+  if (!isWhitelisted(session.username)) {
     db.prepare('DELETE FROM sessions WHERE token_hash=?').run(session.token_hash);
     clearSessionCookie(res);
     return next(error(403, 'Account is not currently authorized'));
@@ -162,7 +164,7 @@ function sharePermissions(row) {
 
 function activeOwner(ownerId) {
   const owner = db.prepare('SELECT username FROM users WHERE id=?').get(ownerId);
-  return owner && config.whitelist.has(owner.username.toLowerCase()) ? owner : null;
+  return owner && isWhitelisted(owner.username) ? owner : null;
 }
 
 function getFolderAccess(userId, folderId) {
@@ -179,7 +181,7 @@ function getFolderAccess(userId, folderId) {
     FROM ancestors JOIN shares s ON s.resource_type='folder' AND s.resource_id=ancestors.id
     JOIN users owner ON owner.id=s.owner_id
     WHERE s.recipient_id=? AND s.owner_id=? ORDER BY ancestors.depth ASC`).all(folderId, userId, folder.user_id);
-  const activeShares = shares.filter((share) => config.whitelist.has(share.owner_username.toLowerCase()));
+  const activeShares = shares.filter((share) => isWhitelisted(share.owner_username));
   if (!activeShares.length) throw error(404, 'Folder not found');
   const permissions = activeShares.reduce((combined, share) => {
     const granted = sharePermissions(share);
@@ -212,7 +214,7 @@ function getFileAccess(userId, fileId) {
       WHERE s.recipient_id=? AND s.owner_id=?`).all(file.folder_id, userId, file.user_id);
     grants.push(...inherited);
   }
-  const activeGrants = grants.filter((grant) => config.whitelist.has(grant.owner_username.toLowerCase()));
+  const activeGrants = grants.filter((grant) => isWhitelisted(grant.owner_username));
   if (!activeGrants.length) throw error(404, 'File not found');
   const permissions = activeGrants.reduce((combined, grant) => {
     const granted = sharePermissions(grant);
@@ -262,7 +264,7 @@ app.post('/api/auth/register', async (req, res, next) => {
     const username = typeof req.body?.username === 'string' ? req.body.username.trim() : '';
     const password = req.body?.password;
     if (!/^[a-zA-Z0-9_.-]{3,32}$/.test(username)) throw error(400, 'Username must be 3–32 letters, numbers, dots, dashes, or underscores');
-    if (!config.whitelist.has(username.toLowerCase())) throw error(403, 'Registration is not available for this username');
+    if (!isWhitelisted(username)) throw error(403, 'Registration is not available for this username');
     if (typeof password !== 'string' || password.length < 12 || password.length > 1024) {
       throw error(400, 'Password must be at least 12 characters');
     }
@@ -295,7 +297,7 @@ app.post('/api/auth/login', async (req, res, next) => {
     const actual = await passwordHash(password, salt);
     const valid = crypto.timingSafeEqual(actual, expectedHash)
       && validPasswordLength
-      && Boolean(user && config.whitelist.has(user.username.toLowerCase()));
+      && Boolean(user && isWhitelisted(user.username));
     if (!valid) {
       audit(user?.id, 'login_failed');
       throw error(401, 'Invalid username or password');
@@ -339,7 +341,7 @@ app.get('/api/users/search', requireAuth, (req, res) => {
     WHERE id<>? AND username LIKE ? ESCAPE '\\' COLLATE NOCASE
     ORDER BY username COLLATE NOCASE LIMIT 20`)
     .all(req.user.id, `${query.replace(/[\\%_]/g, '\\$&')}%`)
-    .filter((user) => config.whitelist.has(user.username.toLowerCase()))
+    .filter((user) => isWhitelisted(user.username))
     .map(({ username }) => ({ username }));
   res.json({ users });
 });
@@ -377,7 +379,7 @@ app.post('/api/shares/:type/:id', requireAuth, (req, res, next) => {
     if (!active) throw error(404, 'Item not found');
     const username = typeof req.body?.username === 'string' ? req.body.username.trim() : '';
     const recipient = db.prepare('SELECT id, username FROM users WHERE username=? COLLATE NOCASE').get(username);
-    if (!recipient || !config.whitelist.has(recipient.username.toLowerCase())) {
+    if (!recipient || !isWhitelisted(recipient.username)) {
       throw error(404, 'Choose an existing, currently authorized user');
     }
     if (recipient.id === req.user.id) throw error(400, 'You cannot share an item with yourself');
@@ -468,7 +470,7 @@ app.get('/api/files', requireAuth, (req, res) => {
       FROM shares s JOIN folders d ON s.resource_type='folder' AND d.id=s.resource_id
       JOIN users u ON u.id=s.owner_id
       WHERE s.recipient_id=? AND d.deleted_at IS NULL`).all(userId, userId)
-      .filter((root) => config.whitelist.has(root.owner_username.toLowerCase()));
+      .filter((root) => isWhitelisted(root.owner_username));
     files = roots.filter((root) => root.resource_type === 'file').map((root) => ({
       id: root.resource_id, user_id: root.resource_owner_id, folder_id: root.folder_id, name: root.name,
       size: root.size, status: root.status, detection: root.detection, starred: 0,

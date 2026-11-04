@@ -31,19 +31,23 @@ if (sessionSecret.length < 32 || sessionSecret.includes('replace-with-')) {
   throw new Error('SESSION_SECRET must contain at least 32 non-placeholder characters');
 }
 
+const whitelistFeature = boolean('WHITELISTFEATURE', true);
 const whitelist = new Set(
   (process.env.WHITELIST || (isDevelopment ? 'developer' : ''))
     .split(',')
     .map((username) => username.trim().toLowerCase())
     .filter(Boolean)
 );
-if (whitelist.size === 0) throw new Error('WHITELIST must contain at least one username');
+if (whitelistFeature && whitelist.size === 0) {
+  throw new Error('WHITELIST must contain at least one username when WHITELISTFEATURE is enabled');
+}
 
 const config = {
   environment,
   port: integer('PORT', 3000, 1, 65535),
   host: process.env.HOST || (isDevelopment ? '127.0.0.1' : '0.0.0.0'),
   sessionSecret,
+  whitelistFeature,
   whitelist,
   sessionMaxAgeHours: integer('SESSION_MAX_AGE_HOURS', 24, 1, 720),
   cookieSecure: boolean('COOKIE_SECURE', !isDevelopment),

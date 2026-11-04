@@ -142,6 +142,7 @@ before(async () => {
       HOST: '127.0.0.1',
       DATA_DIRECTORY: dataDirectory,
       SESSION_SECRET: crypto.randomBytes(48).toString('hex'),
+      WHITELISTFEATURE: 'TRUE',
       WHITELIST: 'alice,bob',
       COOKIE_SECURE: 'false',
       MAX_FILE_SIZE_MB: '2',
@@ -393,4 +394,66 @@ test('authentication, isolated storage, scanning, editing, and quarantine', { ti
   overQuotaForm.append('file', new Blob([Buffer.alloc(400 * 1024, 67)]), 'over-quota.txt');
   const overQuota = await request('/api/upload', { method: 'POST', body: overQuotaForm }, alice);
   assert.equal(overQuota.status, 507);
+});
+
+test('whitelist can be disabled to allow registration and login without a whitelist', { timeout: 15000 }, async () => {
+  const disabledDataDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'simple-file-store-no-whitelist-'));
+  const port = await unusedPort();
+  const url = `http://127.0.0.1:${port}`;
+  const disabledServer = spawn(process.execPath, ['src/server.js'], {
+    cwd: root,
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      PORT: String(port),
+      HOST: '127.0.0.1',
+      DATA_DIRECTORY: disabledDataDirectory,
+      SESSION_SECRET: crypto.randomBytes(48).toString('hex'),
+      WHITELISTFEATURE: 'FALSE',
+      WHITELIST: '',
+      COOKIE_SECURE: 'false'
+    },
+    stdio: 'ignore'
+  });
+
+  try {
+    let healthy = false;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (disabledServer.exitCode !== null) throw new Error(`Test server exited with ${disabledServer.exitCode}`);
+      try {
+        const response = await fetch(`${url}/healthz`);
+        if (response.ok) {
+          healthy = true;
+          break;
+        }
+      } catch { }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.equal(healthy, true, 'Test server did not start in time');
+
+    const credentials = { username: 'unlisted-user', password: 'correct horse battery staple' };
+    const registration = await fetch(`${url}/api/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(credentials)
+    });
+    assert.equal(registration.status, 201);
+
+    const login = await fetch(`${url}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(credentials)
+    });
+    assert.equal(login.status, 200);
+    const cookie = login.headers.get('set-cookie').split(';')[0];
+    const me = await fetch(`${url}/api/auth/me`, { headers: { Cookie: cookie } });
+    assert.equal(me.status, 200);
+    assert.equal((await me.json()).username, credentials.username);
+  } finally {
+    if (disabledServer.exitCode === null) {
+      disabledServer.kill('SIGTERM');
+      await new Promise((resolve) => disabledServer.once('exit', resolve));
+    }
+    await fs.rm(disabledDataDirectory, { recursive: true, force: true });
+  }
 });
