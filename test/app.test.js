@@ -197,6 +197,21 @@ test('authentication, isolated storage, scanning, editing, and quarantine', { ti
   const passedFile = await waitForStatus(alice, uploaded.id, 'SCAN_PASSED', folder.id);
   assert.equal(passedFile.folderId, folder.id);
 
+  const uploadedDirectoryResponse = await request('/api/folders', {
+    method: 'POST',
+    body: JSON.stringify({ name: 'Photos', parentId: folder.id })
+  }, alice);
+  assert.equal(uploadedDirectoryResponse.status, 201);
+  const uploadedDirectory = await json(uploadedDirectoryResponse);
+  const nestedUploadForm = new FormData();
+  nestedUploadForm.append('folderId', uploadedDirectory.id);
+  nestedUploadForm.append('file', new Blob(['nested file']), 'photo.txt');
+  const nestedUploadResponse = await request('/api/upload', { method: 'POST', body: nestedUploadForm }, alice);
+  assert.equal(nestedUploadResponse.status, 202);
+  const nestedUpload = await json(nestedUploadResponse);
+  const nestedPassedFile = await waitForStatus(alice, nestedUpload.id, 'SCAN_PASSED', uploadedDirectory.id);
+  assert.equal(nestedPassedFile.folderId, uploadedDirectory.id);
+
   const download = await request(`/api/files/${uploaded.id}/download`, {}, alice);
   assert.equal(download.status, 200);
   assert.equal(await download.text(), 'first version');

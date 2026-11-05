@@ -527,9 +527,30 @@ $('#search').addEventListener('input', () => {
 });
 $('#clear-search').addEventListener('click', () => { $('#search').value = ''; $('#search').dispatchEvent(new Event('input')); });
 
-$('#upload-button').addEventListener('click', () => $('#file-picker').click());
-$('#empty-upload').addEventListener('click', () => $('#file-picker').click());
+function showUploadChoice() {
+  $('#upload-choice').classList.remove('hidden');
+}
+
+function hideUploadChoice() {
+  $('#upload-choice').classList.add('hidden');
+}
+
+$('#upload-button').addEventListener('click', showUploadChoice);
+$('#empty-upload').addEventListener('click', showUploadChoice);
+$('#choose-files').addEventListener('click', () => {
+  hideUploadChoice();
+  $('#file-picker').click();
+});
+$('#choose-folder').addEventListener('click', () => {
+  hideUploadChoice();
+  $('#folder-picker').click();
+});
+$('#upload-choice-cancel').addEventListener('click', hideUploadChoice);
 $('#file-picker').addEventListener('change', async (event) => {
+  await uploadFiles([...event.target.files]);
+  event.target.value = '';
+});
+$('#folder-picker').addEventListener('change', async (event) => {
   await uploadFiles([...event.target.files]);
   event.target.value = '';
 });
@@ -538,9 +559,19 @@ async function uploadFiles(files) {
   if (!files.length) return;
   const status = $('#upload-status');
   status.classList.remove('hidden');
+  const baseFolderId = state.mode === 'folder' ? state.folderId : null;
+  const createdFolders = new Map();
   for (const file of files) {
+    const relativePath = file.webkitRelativePath || '';
+    const pathParts = relativePath ? relativePath.split('/') : [];
+    if (pathParts.some((part) => !part || part === '.' || part === '..')) {
+      toast(`${file.name}: Invalid folder path`, true);
+      continue;
+    }
+    const folderParts = pathParts.slice(0, -1);
+    const displayName = relativePath || file.name;
     const line = document.createElement('div');
-    line.textContent = `Uploading ${file.name}…`;
+    line.textContent = `Uploading ${displayName}…`;
     const progress = document.createElement('progress');
     progress.max = 100;
     progress.value = 0;
@@ -551,6 +582,22 @@ async function uploadFiles(files) {
     cancel.onclick = () => state.currentUploadRequest?.abort();
     status.replaceChildren(line, progress, cancel);
     try {
+      let uploadFolderId = baseFolderId;
+      const currentPath = [];
+      for (const folderName of folderParts) {
+        currentPath.push(folderName);
+        const cacheKey = currentPath.join('/');
+        if (createdFolders.has(cacheKey)) {
+          uploadFolderId = createdFolders.get(cacheKey);
+        } else {
+          const folder = await api('/api/folders', {
+            method: 'POST',
+            body: JSON.stringify({ name: folderName, parentId: uploadFolderId })
+          });
+          uploadFolderId = folder.id;
+          createdFolders.set(cacheKey, uploadFolderId);
+        }
+      }
       await new Promise((resolve, reject) => {
         const request = new XMLHttpRequest();
         state.currentUploadRequest = request;
@@ -568,12 +615,12 @@ async function uploadFiles(files) {
         request.onerror = () => reject(new Error('Network error while uploading'));
         request.onabort = () => reject(new Error('Upload cancelled'));
         const body = new FormData();
-        body.append('folderId', state.mode === 'folder' ? state.folderId || '' : '');
+        body.append('folderId', uploadFolderId || '');
         body.append('file', file, file.name);
         request.send(body);
       });
-      toast(`${file.name} uploaded. Scanning before it becomes available.`);
-    } catch (error) { toast(`${file.name}: ${error.message}`, true); }
+      toast(`${displayName} uploaded. Scanning before it becomes available.`);
+    } catch (error) { toast(`${displayName}: ${error.message}`, true); }
     finally { state.currentUploadRequest = null; }
   }
   setTimeout(() => status.classList.add('hidden'), 2500);
