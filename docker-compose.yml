@@ -11,7 +11,7 @@ services:
         reservations:
           memory: "134217728"
     environment:
-      - COOKIE_SECURE=true
+      - COOKIE_SECURE=false
       - DATA_DIRECTORY=/app/data
       - HOST=0.0.0.0
       - HTTPS_ENABLED=FALSE
