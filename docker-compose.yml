@@ -1,54 +1,54 @@
-
 name: simple-file-store
-
 services:
   simple-file-store:
-    image: ghcr.io/pxlvted/simplefilestore:latest
+    cpu_shares: 90
+    command: []
     container_name: simple-file-store
-
     deploy:
       resources:
+        limits:
+          memory: 110428M
         reservations:
-          memory: 128M
-
-    network_mode: bridge
-
+          memory: "134217728"
+    environment:
+      - COOKIE_SECURE=true
+      - DATA_DIRECTORY=/app/data
+      - HOST=0.0.0.0
+      - HTTPS_ENABLED=FALSE
+      - MAX_ARCHIVE_COMPRESSION_RATIO=100
+      - MAX_ARCHIVE_ENTRIES=10000
+      - MAX_ARCHIVE_ENTRY_MB=2048
+      - MAX_ARCHIVE_UNCOMPRESSED_MB=2048
+      - MAX_CONCURRENT_UPLOADS=3
+      - MAX_FILE_SIZE_MB=2048
+      - MAX_GLOBAL_QUARANTINE_MB=25000
+      - MAX_GLOBAL_STAGING_MB=25000
+      - MAX_SCAN_FILE_SIZE_MB=2048
+      - MAX_STORAGE_MB=25000
+      - NODE_ENV=production
+      - PORT=3000
+      - QUARANTINE_RETENTION_DAYS=7
+      - SCAN_CONCURRENCY=1
+      - SCAN_TIMEOUT_SECONDS=120
+      - SESSION_MAX_AGE_HOURS=24
+      - SESSION_SECRET={SESSION_SECRET}
+      - TRUST_PROXY=false
+      - WHITELIST=BOB
+      - WHITELISTFEATURE=TRUE
+    hostname: simple-file-store
+    image: ghcr.io/pxlvted/simplefilestore:latest
+    labels:
+      icon: 
     ports:
       - target: 3000
         published: "3012"
         protocol: tcp
-
     restart: unless-stopped
-
     volumes:
       - type: bind
-        source: /DATA/AppData/${AppID}/data
+        source: /DATA/AppData/simple-file-store/data
         target: /app/data
-
-    environment:
-      NODE_ENV: production
-      PORT: "3000"
-      HOST: "0.0.0.0"
-      SESSION_SECRET: ${SESSION_SECRET}
-      WHITELIST: BOB
-      WHITELISTFEATURE: TRUE
-      SESSION_MAX_AGE_HOURS: "24"
-      COOKIE_SECURE: "true"
-      TRUST_PROXY: "false"
-      DATA_DIRECTORY: /app/data
-
-      MAX_FILE_SIZE_MB: "2048"
-      MAX_STORAGE_MB: "25000"
-      MAX_CONCURRENT_UPLOADS: "3"
-      MAX_GLOBAL_STAGING_MB: "25000"
-      MAX_GLOBAL_QUARANTINE_MB: "25000"
-
-      SCAN_CONCURRENCY: "1"
-      SCAN_TIMEOUT_SECONDS: "120"
-      MAX_SCAN_FILE_SIZE_MB: "2048"
-      QUARANTINE_RETENTION_DAYS: "7"
-
-      MAX_ARCHIVE_ENTRIES: "10000"
-      MAX_ARCHIVE_UNCOMPRESSED_MB: "2048"
-      MAX_ARCHIVE_ENTRY_MB: "2048"
-      MAX_ARCHIVE_COMPRESSION_RATIO: "100"
+    devices: []
+    cap_add: []
+    network_mode: bridge
+    privileged: false
