@@ -419,13 +419,14 @@ test('whitelist can be disabled to allow registration and login without a whitel
     cwd: root,
     env: {
       ...process.env,
-      NODE_ENV: 'test',
+      NODE_ENV: 'production',
       PORT: String(port),
       HOST: '127.0.0.1',
       DATA_DIRECTORY: disabledDataDirectory,
       SESSION_SECRET: crypto.randomBytes(48).toString('hex'),
       WHITELISTFEATURE: 'FALSE',
       WHITELIST: '',
+      HTTPS_ENABLED: 'false',
       COOKIE_SECURE: 'false'
     },
     stdio: 'ignore'
@@ -445,6 +446,19 @@ test('whitelist can be disabled to allow registration and login without a whitel
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     assert.equal(healthy, true, 'Test server did not start in time');
+
+    const page = await fetch(`${url}/`);
+    const css = await fetch(`${url}/styles.css`);
+    const javascript = await fetch(`${url}/app.js`);
+    const contentSecurityPolicy = page.headers.get('content-security-policy');
+    assert.equal(page.status, 200);
+    assert.equal(css.status, 200);
+    assert.equal(javascript.status, 200);
+    assert.equal(page.headers.get('strict-transport-security'), null);
+    assert.doesNotMatch(contentSecurityPolicy, /upgrade-insecure-requests/);
+    assert.match(contentSecurityPolicy, /default-src 'self'/);
+    assert.equal(page.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(page.headers.get('x-frame-options'), 'SAMEORIGIN');
 
     const credentials = { username: 'unlisted-user', password: 'correct horse battery staple' };
     const registration = await fetch(`${url}/api/auth/register`, {

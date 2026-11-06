@@ -25,9 +25,11 @@ app.use(helmet({
     directives: {
       defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'"],
       imgSrc: ["'self'", 'data:'], objectSrc: ["'none'"], baseUri: ["'none'"],
-      frameAncestors: ["'none'"], formAction: ["'self'"]
+      frameAncestors: ["'none'"], formAction: ["'self'"],
+      upgradeInsecureRequests: config.httpsEnabled ? [] : null
     }
   },
+  strictTransportSecurity: config.httpsEnabled ? undefined : false,
   crossOriginEmbedderPolicy: false
 }));
 app.use(express.json({ limit: '2mb', strict: true }));

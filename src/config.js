@@ -44,6 +44,7 @@ if (whitelistFeature && whitelist.size === 0) {
 
 const config = {
   environment,
+  httpsEnabled: boolean('HTTPS_ENABLED', false),
   port: integer('PORT', 3000, 1, 65535),
   host: process.env.HOST || (isDevelopment ? '127.0.0.1' : '0.0.0.0'),
   sessionSecret,
