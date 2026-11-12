@@ -59,6 +59,72 @@ function makeZip(name, content) {
   return Buffer.concat([localRecord, centralRecord, end]);
 }
 
+function makeTar(name, content) {
+  const fileName = Buffer.from(name);
+  const data = Buffer.from(content);
+  const header = Buffer.alloc(512);
+  fileName.copy(header, 0, 0, 100);
+  header.write('0000644\0', 100, 'ascii');
+  header.write('0000000\0', 108, 'ascii');
+  header.write('0000000\0', 116, 'ascii');
+  header.write(`${data.length.toString(8).padStart(11, '0')}\0`, 124, 'ascii');
+  header.write('00000000000\0', 136, 'ascii');
+  header.fill(0x20, 148, 156);
+  header[156] = 0x30;
+  header.write('ustar\0', 257, 'ascii');
+  header.write('00', 263, 'ascii');
+  let checksum = 0;
+  for (const byte of header) checksum += byte;
+  header.write(`${checksum.toString(8).padStart(6, '0')}\0 `, 148, 'ascii');
+  return Buffer.concat([header, data, Buffer.alloc((512 - (data.length % 512)) % 512), Buffer.alloc(1024)]);
+}
+
+function makeIso(name, content) {
+  const data = Buffer.from(content);
+  const image = Buffer.alloc(22 * 2048);
+  function writeBothEndian32(buffer, offset, value) {
+    buffer.writeUInt32LE(value, offset);
+    buffer.writeUInt32BE(value, offset + 4);
+  }
+  function record(nameBytes, extent, size, directory = false) {
+    const length = 33 + nameBytes.length + (nameBytes.length % 2 === 0 ? 1 : 0);
+    const result = Buffer.alloc(length);
+    result[0] = length;
+    writeBothEndian32(result, 2, extent);
+    writeBothEndian32(result, 10, size);
+    result[25] = directory ? 2 : 0;
+    result.writeUInt16LE(1, 28);
+    result.writeUInt16BE(1, 30);
+    result[32] = nameBytes.length;
+    nameBytes.copy(result, 33);
+    return result;
+  }
+
+  const primary = image.subarray(16 * 2048, 17 * 2048);
+  primary[0] = 1;
+  primary.write('CD001', 1, 'ascii');
+  primary[6] = 1;
+  writeBothEndian32(primary, 80, 22);
+  primary.writeUInt16LE(2048, 128);
+  primary.writeUInt16BE(2048, 130);
+  record(Buffer.from([0]), 20, 2048, true).copy(primary, 156);
+
+  const terminator = image.subarray(17 * 2048, 18 * 2048);
+  terminator[0] = 255;
+  terminator.write('CD001', 1, 'ascii');
+  terminator[6] = 1;
+
+  const fileName = Buffer.from(`${name};1`, 'ascii');
+  const directory = Buffer.concat([
+    record(Buffer.from([0]), 20, 2048, true),
+    record(Buffer.from([1]), 20, 2048, true),
+    record(fileName, 21, data.length)
+  ]);
+  directory.copy(image, 20 * 2048);
+  data.copy(image, 21 * 2048);
+  return image;
+}
+
 async function unusedPort() {
   const listener = net.createServer();
   await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
@@ -122,7 +188,7 @@ async function waitForStatus(session, fileId, expected, folderId = null) {
     if (found) lastStatus = found.status;
     if (found && ['SCAN_FAILED', 'UNSCANNABLE', 'SUSPICIOUS', 'INFECTED'].includes(found.status)
       && found.status !== expected) {
-      throw new Error(`Expected ${expected}, got ${found.status}`);
+      throw new Error(`Expected ${expected}, got ${found.status}: ${found.detection}`);
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
@@ -243,6 +309,38 @@ test('authentication, isolated storage, scanning, editing, and quarantine', { ti
   assert.equal(safeZipUpload.status, 202);
   const safeZip = await json(safeZipUpload);
   await waitForStatus(alice, safeZip.id, 'SCAN_PASSED');
+
+  const safeTarForm = new FormData();
+  safeTarForm.append('file', new Blob([makeTar('inside.txt', 'safe TAR content')]), 'archive.tar');
+  const safeTarUpload = await request('/api/upload', { method: 'POST', body: safeTarForm }, alice);
+  assert.equal(safeTarUpload.status, 202);
+  await waitForStatus(alice, (await json(safeTarUpload)).id, 'SCAN_PASSED');
+
+  const unsafeTarForm = new FormData();
+  unsafeTarForm.append('file', new Blob([makeTar('../outside.txt', 'unsafe TAR path')]), 'unsafe.tar');
+  const unsafeTarUpload = await request('/api/upload', { method: 'POST', body: unsafeTarForm }, alice);
+  assert.equal(unsafeTarUpload.status, 202);
+  const unsafeTar = await waitForStatus(alice, (await json(unsafeTarUpload)).id, 'UNSCANNABLE');
+  assert.match(unsafeTar.detection, /outside\.txt/);
+
+  const safeTarGzipForm = new FormData();
+  safeTarGzipForm.append('file', new Blob([zlib.gzipSync(makeTar('inside.txt', 'safe TAR.GZ content'))]), 'archive.tar.gz');
+  const safeTarGzipUpload = await request('/api/upload', { method: 'POST', body: safeTarGzipForm }, alice);
+  assert.equal(safeTarGzipUpload.status, 202);
+  await waitForStatus(alice, (await json(safeTarGzipUpload)).id, 'SCAN_PASSED');
+
+  const safeIsoForm = new FormData();
+  safeIsoForm.append('file', new Blob([makeIso('INSIDE.TXT', 'safe ISO content')]), 'archive.iso');
+  const safeIsoUpload = await request('/api/upload', { method: 'POST', body: safeIsoForm }, alice);
+  assert.equal(safeIsoUpload.status, 202);
+  await waitForStatus(alice, (await json(safeIsoUpload)).id, 'SCAN_PASSED');
+
+  const archiveInfectedForm = new FormData();
+  archiveInfectedForm.append('file', new Blob([zlib.gzipSync(makeTar('eicar.txt', eicar))]), 'infected.tar.gz');
+  const archiveInfectedUpload = await request('/api/upload', { method: 'POST', body: archiveInfectedForm }, alice);
+  assert.equal(archiveInfectedUpload.status, 202);
+  const archiveInfected = await waitForStatus(alice, (await json(archiveInfectedUpload)).id, 'INFECTED');
+  assert.match(archiveInfected.detection, /EICAR/);
 
   const unsafeZipForm = new FormData();
   unsafeZipForm.append('file', new Blob([makeZip('../outside.txt', 'unsafe path')]), 'unsafe.zip');
