@@ -86,7 +86,8 @@ const config = {
   maxArchiveEntries: limit('MAX_ARCHIVE_ENTRIES', 1000),
   maxArchiveUncompressed: limit('MAX_ARCHIVE_UNCOMPRESSED_MB', 500, 1024 * 1024),
   maxArchiveEntry: limit('MAX_ARCHIVE_ENTRY_MB', 100, 1024 * 1024),
-  maxArchiveRatio: limit('MAX_ARCHIVE_COMPRESSION_RATIO', 100)
+  maxArchiveRatio: limit('MAX_ARCHIVE_COMPRESSION_RATIO', 100),
+  nestedArchivesEnabled: boolean('NESTED_ARCHIVES_ENABLED', false)
 };
 
 export default config;

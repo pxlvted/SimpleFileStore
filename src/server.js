@@ -670,7 +670,8 @@ function startScanWorker(job, file) {
         maxArchiveEntries: config.maxArchiveEntries,
         maxArchiveUncompressed: config.maxArchiveUncompressed,
         maxArchiveEntry: config.maxArchiveEntry,
-        maxArchiveRatio: config.maxArchiveRatio
+        maxArchiveRatio: config.maxArchiveRatio,
+        nestedArchivesEnabled: config.nestedArchivesEnabled
       }
     },
     resourceLimits: { maxOldGenerationSizeMb: 96, maxYoungGenerationSizeMb: 24 }

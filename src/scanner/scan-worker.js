@@ -1,5 +1,6 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import yauzl from 'yauzl';
@@ -9,6 +10,9 @@ const limits = workerData.limits;
 let scannedBytes = 0;
 const findings = [];
 const maxPrefixSize = 32774;
+const maxNestedArchiveDepth = 5;
+let temporaryDirectory;
+let temporaryFileSequence = 0;
 
 function inspectChunk(chunk, state, countBytes = true) {
   if (countBytes) {
@@ -56,6 +60,94 @@ function archiveTypeIsNested(prefix) {
     .includes(detectType(prefix));
 }
 
+function nestedArchiveTypeIsSupported(type) {
+  return ['zip', 'gzip', 'tar', 'iso'].includes(type);
+}
+
+class ArchiveEntryInspector {
+  constructor(fileName) {
+    this.fileName = fileName;
+    this.state = { tail: Buffer.alloc(0), prefix: Buffer.alloc(0) };
+    this.pending = [];
+    this.archiveType = null;
+    this.filePath = null;
+    this.fileHandle = null;
+    this.fileOffset = 0;
+  }
+
+  async writeChunk(chunk) {
+    let offset = 0;
+    while (offset < chunk.length) {
+      const { bytesWritten } = await this.fileHandle.write(
+        chunk,
+        offset,
+        chunk.length - offset,
+        this.fileOffset
+      );
+      if (bytesWritten === 0) throw new Error('Unable to write nested archive data');
+      offset += bytesWritten;
+      this.fileOffset += bytesWritten;
+    }
+  }
+
+  async consume(chunk) {
+    inspectChunk(chunk, this.state);
+    if (this.fileHandle) {
+      await this.writeChunk(chunk);
+      return;
+    }
+
+    this.pending.push(chunk);
+    if (!this.archiveType && archiveTypeIsNested(this.state.prefix)) {
+      this.archiveType = detectType(this.state.prefix);
+      if (!limits.nestedArchivesEnabled || !nestedArchiveTypeIsSupported(this.archiveType)) {
+        throw new Error('Nested archives are not supported for safe inspection');
+      }
+      this.filePath = path.join(temporaryDirectory, `nested-${temporaryFileSequence++}`);
+      this.fileHandle = await fs.promises.open(this.filePath, 'w');
+      for (const bufferedChunk of this.pending) await this.writeChunk(bufferedChunk);
+      this.pending = [];
+    } else if (this.state.prefix.length >= maxPrefixSize) {
+      this.pending = [];
+    }
+  }
+
+  async finish() {
+    if (this.fileHandle) {
+      await this.fileHandle.close();
+      this.fileHandle = null;
+    }
+    return {
+      fileName: this.fileName,
+      filePath: this.filePath,
+      type: this.archiveType
+    };
+  }
+
+  async abort() {
+    if (this.fileHandle) {
+      await this.fileHandle.close();
+      this.fileHandle = null;
+    }
+    if (this.filePath) {
+      await fs.promises.unlink(this.filePath).catch((error) => {
+        if (error.code !== 'ENOENT') throw error;
+      });
+    }
+  }
+}
+
+async function inspectArchiveEntryStream(stream, fileName) {
+  const inspector = new ArchiveEntryInspector(fileName);
+  try {
+    for await (const chunk of stream) await inspector.consume(chunk);
+    return await inspector.finish();
+  } catch (error) {
+    await inspector.abort();
+    throw error;
+  }
+}
+
 function openZip(filePath) {
   return new Promise((resolve, reject) => {
     yauzl.open(filePath, {
@@ -71,12 +163,12 @@ function readZipEntry(zipfile, entry) {
   return new Promise((resolve, reject) => {
     zipfile.openReadStream(entry, (error, stream) => {
       if (error) return reject(error);
-      inspectChunkedStream(stream).then(resolve, reject);
+      inspectArchiveEntryStream(stream, entry.fileName).then(resolve, reject);
     });
   });
 }
 
-async function inspectZip(filePath) {
+async function inspectZip(filePath, depth = 0) {
   const zipfile = await openZip(filePath);
   return new Promise((resolve, reject) => {
     let entries = 0;
@@ -117,10 +209,8 @@ async function inspectZip(filePath) {
         return;
       }
       try {
-        const prefix = await readZipEntry(zipfile, entry);
-        if (['zip', '7z', 'rar', 'gzip', 'bzip2', 'xz', 'tar', 'iso', 'cab', 'zstd', 'lz4'].includes(detectType(prefix))) {
-          throw new Error('Nested archives are not supported for safe inspection');
-        }
+        const nestedEntry = await readZipEntry(zipfile, entry);
+        await inspectNestedEntry(nestedEntry, depth);
         zipfile.readEntry();
       } catch (error) {
         fail(error);
@@ -189,7 +279,7 @@ class StreamReader {
     while (remaining > 0) {
       const chunk = await this.readChunk(Math.min(64 * 1024, remaining));
       if (!chunk) throw new Error('Truncated archive');
-      callback(chunk);
+      await callback(chunk);
       remaining -= chunk.length;
     }
   }
@@ -247,7 +337,7 @@ function verifyTarHeader(header) {
   if (actual !== expected) throw new Error('Invalid TAR header checksum');
 }
 
-async function inspectTar(stream, compressedSize = null) {
+async function inspectTar(stream, compressedSize = null, depth = 0) {
   const maxArchiveBytes = limits.maxArchiveUncompressed + limits.maxArchiveEntries * 1024 + 1024;
   const reader = new StreamReader(stream, maxArchiveBytes);
   let entries = 0;
@@ -314,11 +404,16 @@ async function inspectTar(stream, compressedSize = null) {
     if (type !== '0' && type !== '7' && type !== '5') throw new Error('Unsupported TAR entry type');
     if (type === '5' && size !== 0) throw new Error('Invalid TAR directory entry');
     if (type === '0' || type === '7') {
-      const state = { tail: Buffer.alloc(0), prefix: Buffer.alloc(0) };
-      await reader.consume(size, (chunk) => inspectChunk(chunk, state, false));
-      if (archiveTypeIsNested(state.prefix)) {
-        throw new Error('Nested archives are not supported for safe inspection');
+      const inspector = new ArchiveEntryInspector(fileName);
+      let nestedEntry;
+      try {
+        await reader.consume(size, (chunk) => inspector.consume(chunk));
+        nestedEntry = await inspector.finish();
+      } catch (error) {
+        await inspector.abort();
+        throw error;
       }
+      await inspectNestedEntry(nestedEntry, depth);
     } else {
       await reader.readExact(size);
     }
@@ -385,7 +480,7 @@ function validateIsoSystemUse(record, nameLength) {
   }
 }
 
-async function inspectIso(filePath, fileSize) {
+async function inspectIso(filePath, fileSize, depth = 0) {
   const handle = await fs.promises.open(filePath, 'r');
   try {
     let primary = null;
@@ -466,13 +561,19 @@ async function inspectIso(filePath, fileSize) {
           } else {
             totalSize += size;
             if (totalSize > limits.maxArchiveUncompressed) throw new Error('Archive expansion size limit exceeded');
-            const prefixSize = Math.min(size, maxPrefixSize);
-            if (prefixSize > 0) {
-              const prefix = await readAt(handle, dataStart, prefixSize);
-              if (archiveTypeIsNested(prefix)) {
-                throw new Error('Nested archives are not supported for safe inspection');
+            const inspector = new ArchiveEntryInspector(entryPath);
+            let nestedEntry;
+            try {
+              for (let position = 0; position < size; position += 64 * 1024) {
+                const chunk = await readAt(handle, dataStart + position, Math.min(64 * 1024, size - position));
+                await inspector.consume(chunk);
               }
+              nestedEntry = await inspector.finish();
+            } catch (error) {
+              await inspector.abort();
+              throw error;
             }
+            await inspectNestedEntry(nestedEntry, depth);
           }
         }
         offset += recordLength;
@@ -502,11 +603,47 @@ function detectType(prefix) {
   return 'unknown';
 }
 
+async function inspectNestedArchive(filePath, type, depth) {
+  if (depth > maxNestedArchiveDepth) throw new Error('Nested archive depth limit exceeded');
+  const stat = await fs.promises.stat(filePath);
+  if (type === 'zip') {
+    await inspectZip(filePath, depth);
+  } else if (type === 'tar') {
+    await inspectTar(fs.createReadStream(filePath), null, depth);
+  } else if (type === 'iso') {
+    await inspectIso(filePath, stat.size, depth);
+  } else if (type === 'gzip') {
+    const archiveStream = fs.createReadStream(filePath);
+    await inspectTar(archiveStream.pipe(zlib.createGunzip()), stat.size, depth);
+  } else {
+    throw new Error('Nested archives are not supported for safe inspection');
+  }
+}
+
+async function inspectNestedEntry(entry, depth) {
+  if (!entry.filePath) return;
+  try {
+    await inspectNestedArchive(entry.filePath, entry.type, depth + 1);
+  } finally {
+    await fs.promises.unlink(entry.filePath);
+  }
+}
+
 async function main() {
   const stat = await fs.promises.stat(workerData.filePath);
   if (!stat.isFile() || stat.size > limits.maxScanFileSize) {
     return { status: 'UNSCANNABLE', reason: 'File exceeds the configured scan limit' };
   }
+  temporaryDirectory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'simple-file-store-scan-'));
+  try {
+    return await scanFile(stat);
+  } finally {
+    await fs.promises.rm(temporaryDirectory, { recursive: true, force: true });
+    temporaryDirectory = undefined;
+  }
+}
+
+async function scanFile(stat) {
   const stream = fs.createReadStream(workerData.filePath, { highWaterMark: 64 * 1024 });
   const prefix = await inspectChunkedStream(stream);
   const type = detectType(prefix);

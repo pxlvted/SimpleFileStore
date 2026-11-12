@@ -1,6 +1,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import { Worker } from 'node:worker_threads';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import zlib from 'node:zlib';
@@ -155,6 +156,30 @@ function request(pathname, options = {}, session) {
   return fetch(`${baseUrl}${pathname}`, { ...options, headers });
 }
 
+function scanFile(filePath, fileName, nestedArchivesEnabled) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('../src/scanner/scan-worker.js', import.meta.url), {
+      workerData: {
+        filePath,
+        fileName,
+        limits: {
+          maxScanFileSize: 2 * 1024 * 1024,
+          maxArchiveEntries: 1000,
+          maxArchiveUncompressed: 4 * 1024 * 1024,
+          maxArchiveEntry: 2 * 1024 * 1024,
+          maxArchiveRatio: 100,
+          nestedArchivesEnabled
+        }
+      }
+    });
+    worker.once('message', resolve);
+    worker.once('error', reject);
+    worker.once('exit', (code) => {
+      if (code !== 0) reject(new Error(`Scanner worker exited with code ${code}`));
+    });
+  });
+}
+
 async function json(response) {
   return response.json();
 }
@@ -216,7 +241,8 @@ before(async () => {
       MAX_GLOBAL_STAGING_MB: '8',
       MAX_SCAN_FILE_SIZE_MB: '2',
       MAX_ARCHIVE_UNCOMPRESSED_MB: '4',
-      MAX_ARCHIVE_ENTRY_MB: '2'
+      MAX_ARCHIVE_ENTRY_MB: '2',
+      NESTED_ARCHIVES_ENABLED: 'TRUE'
     },
     stdio: ['ignore', 'pipe', 'pipe']
   });
@@ -309,6 +335,21 @@ test('authentication, isolated storage, scanning, editing, and quarantine', { ti
   assert.equal(safeZipUpload.status, 202);
   const safeZip = await json(safeZipUpload);
   await waitForStatus(alice, safeZip.id, 'SCAN_PASSED');
+
+  const nestedArchives = [
+    ['inner.zip', makeZip('nested-eicar.txt', Buffer.concat([eicar, crypto.randomBytes(128 * 1024)]))],
+    ['inner.tar', makeTar('nested-eicar.txt', eicar)],
+    ['inner.tar.gz', zlib.gzipSync(makeTar('nested-eicar.txt', eicar))],
+    ['inner.iso', makeIso('nested-eicar.txt', Buffer.concat([eicar, crypto.randomBytes(1024)]))]
+  ];
+  for (const [nestedName, nestedContent] of nestedArchives) {
+    const nestedInfectedForm = new FormData();
+    nestedInfectedForm.append('file', new Blob([makeZip(nestedName, nestedContent)]), 'nested.zip');
+    const nestedInfectedUpload = await request('/api/upload', { method: 'POST', body: nestedInfectedForm }, alice);
+    assert.equal(nestedInfectedUpload.status, 202);
+    const nestedInfected = await waitForStatus(alice, (await json(nestedInfectedUpload)).id, 'INFECTED');
+    assert.match(nestedInfected.detection, /EICAR/, `Failed to scan nested ${nestedName}`);
+  }
 
   const safeTarForm = new FormData();
   safeTarForm.append('file', new Blob([makeTar('inside.txt', 'safe TAR content')]), 'archive.tar');
@@ -507,6 +548,19 @@ test('authentication, isolated storage, scanning, editing, and quarantine', { ti
   overQuotaForm.append('file', new Blob([Buffer.alloc(400 * 1024, 67)]), 'over-quota.txt');
   const overQuota = await request('/api/upload', { method: 'POST', body: overQuotaForm }, alice);
   assert.equal(overQuota.status, 507);
+});
+
+test('nested archives are rejected when nested inspection is disabled', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'simple-file-store-nested-disabled-'));
+  const archivePath = path.join(directory, 'nested.zip');
+  try {
+    await fs.writeFile(archivePath, makeZip('inner.zip', makeZip('inside.txt', 'nested content')));
+    const result = await scanFile(archivePath, 'nested.zip', false);
+    assert.equal(result.status, 'UNSCANNABLE');
+    assert.match(result.reason, /Nested archives are not supported/);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('whitelist can be disabled to allow registration and login without a whitelist', { timeout: 15000 }, async () => {
