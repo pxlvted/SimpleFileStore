@@ -19,6 +19,7 @@ Set these values in a `.env` file:
 SESSION_SECRET=replace-this-with-a-long-random-secret
 WHITELIST=your-username
 ```
+
 setting an value to 0 makes it unlimited
 
 ```sh
