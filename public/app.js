@@ -109,11 +109,14 @@ function formatDate(timestamp) {
 async function loadStorage() {
   try {
     const storage = await api('/api/storage');
-    const percent = storage.limit ? Math.min(100, storage.used / storage.limit * 100) : 0;
+    const unlimited = storage.limit === null;
+    const percent = unlimited ? 0 : Math.min(100, storage.used / storage.limit * 100);
     const level = Math.round(percent / 5);
     $('#storage-percent').textContent = `${Math.round(percent)}%`;
     $('#storage-bar').className = `fill-level-${level}`;
-    $('#storage-text').textContent = `${formatBytes(storage.used)} of ${formatBytes(storage.limit)} used`;
+    $('#storage-text').textContent = unlimited
+      ? `${formatBytes(storage.used)} used · unlimited storage`
+      : `${formatBytes(storage.used)} of ${formatBytes(storage.limit)} used`;
   } catch (error) { toast(error.message, true); }
 }
 
@@ -449,9 +452,12 @@ async function renderStoragePage() {
     card.className = 'storage-card';
     $('#file-area').append(card);
   }
-  const percent = usage.limit ? Math.min(100, usage.used / usage.limit * 100) : 0;
+  const unlimited = usage.limit === null;
+  const percent = unlimited ? 0 : Math.min(100, usage.used / usage.limit * 100);
   const level = Math.round(percent / 5);
-  card.innerHTML = `<p class="eyebrow">Storage</p><strong>${formatBytes(usage.used)}</strong><p class="muted">of ${formatBytes(usage.limit)} used · ${formatBytes(usage.remaining)} available</p><div class="storage-track"><span class="fill-level-${level}"></span></div><p class="muted">Items in Trash still count toward your storage.</p>`;
+  const storageLimit = unlimited ? 'unlimited' : formatBytes(usage.limit);
+  const remaining = unlimited ? 'unlimited' : formatBytes(usage.remaining);
+  card.innerHTML = `<p class="eyebrow">Storage</p><strong>${formatBytes(usage.used)}</strong><p class="muted">of ${storageLimit} used · ${remaining} available</p><div class="storage-track"><span class="fill-level-${level}"></span></div><p class="muted">Items in Trash still count toward your storage.</p>`;
 }
 
 function setAuthMode(mode) {

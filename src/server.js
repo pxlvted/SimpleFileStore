@@ -67,7 +67,8 @@ const getCookie = (request, key) => {
   return '';
 };
 const setSessionCookie = (res, token, maxAge) => {
-  const flags = [`session=${encodeURIComponent(token)}`, 'HttpOnly', 'SameSite=Strict', 'Path=/', `Max-Age=${maxAge}`];
+  const flags = [`session=${encodeURIComponent(token)}`, 'HttpOnly', 'SameSite=Strict', 'Path=/'];
+  if (maxAge !== null) flags.push(`Max-Age=${maxAge}`);
   if (config.cookieSecure) flags.push('Secure');
   res.setHeader('Set-Cookie', flags.join('; '));
 };
@@ -311,10 +312,14 @@ app.post('/api/auth/login', async (req, res, next) => {
     }
     const token = crypto.randomBytes(32).toString('base64url');
     const csrfToken = crypto.randomBytes(32).toString('base64url');
-    const expiresAt = now() + config.sessionMaxAgeHours * 60 * 60 * 1000;
+    const expiresAt = Number.isFinite(config.sessionMaxAgeMs)
+      ? now() + config.sessionMaxAgeMs
+      : Number.MAX_SAFE_INTEGER;
     db.prepare('INSERT INTO sessions (token_hash, user_id, csrf_token, expires_at, created_at) VALUES (?, ?, ?, ?, ?)')
       .run(tokenDigest(token), user.id, csrfToken, expiresAt, now());
-    setSessionCookie(res, token, config.sessionMaxAgeHours * 3600);
+    setSessionCookie(res, token, Number.isFinite(config.sessionMaxAgeMs)
+      ? config.sessionMaxAgeMs / 1000
+      : null);
     audit(user.id, 'login_succeeded');
     res.json({ username: user.username, csrfToken });
   } catch (err) { next(err); }
@@ -333,7 +338,12 @@ app.post('/api/auth/logout', requireAuth, (req, res) => {
 
 app.get('/api/storage', requireAuth, (req, res) => {
   const used = storageUsage(req.user.id);
-  res.json({ used, limit: config.maxStorage, remaining: Math.max(0, config.maxStorage - used) });
+  const unlimited = !Number.isFinite(config.maxStorage);
+  res.json({
+    used,
+    limit: unlimited ? null : config.maxStorage,
+    remaining: unlimited ? null : Math.max(0, config.maxStorage - used)
+  });
 });
 
 app.get('/api/users/search', requireAuth, (req, res) => {
@@ -667,28 +677,30 @@ function startScanWorker(job, file) {
   });
   return new Promise((resolve) => {
     let complete = false;
-    const timeout = setTimeout(() => {
-      if (!complete) {
-        complete = true;
-        worker.terminate().finally(() => resolve({ status: 'SCAN_FAILED', reason: 'Scan timed out' }));
-      }
-    }, config.scanTimeoutMs);
+    const timeout = Number.isFinite(config.scanTimeoutMs)
+      ? setTimeout(() => {
+        if (!complete) {
+          complete = true;
+          worker.terminate().finally(() => resolve({ status: 'SCAN_FAILED', reason: 'Scan timed out' }));
+        }
+      }, config.scanTimeoutMs)
+      : null;
     worker.once('message', (result) => {
       if (complete) return;
       complete = true;
-      clearTimeout(timeout);
+      if (timeout) clearTimeout(timeout);
       worker.terminate().finally(() => resolve(result));
     });
     worker.once('error', (workerError) => {
       if (complete) return;
       complete = true;
-      clearTimeout(timeout);
+      if (timeout) clearTimeout(timeout);
       resolve({ status: 'SCAN_FAILED', reason: workerError.message || 'Scanner worker failed' });
     });
     worker.once('exit', (code) => {
       if (complete) return;
       complete = true;
-      clearTimeout(timeout);
+      if (timeout) clearTimeout(timeout);
       resolve({ status: 'SCAN_FAILED', reason: `Scanner worker exited unexpectedly (${code})` });
     });
   });
@@ -794,7 +806,7 @@ async function scanQueueTick() {
   }
 }
 
-function collectUpload(req, userId) {
+function collectUpload(req, reservation) {
   return new Promise((resolve, reject) => {
     let bb;
     try {
@@ -818,8 +830,19 @@ function collectUpload(req, userId) {
       let size = 0;
       const meter = new Transform({
         transform(chunk, _encoding, callback) {
-          size += chunk.length;
-          if (size > config.maxFileSize) return callback(error(413, 'File exceeds the configured size limit'));
+          const nextSize = size + chunk.length;
+          if (nextSize > config.maxFileSize) return callback(error(413, 'File exceeds the configured size limit'));
+          if (Number.isFinite(config.maxGlobalStaging)) {
+            const pendingBytes = db.prepare(`SELECT COALESCE(SUM(f.size), 0) AS size
+              FROM scan_jobs j JOIN files f ON f.id=j.file_id
+              WHERE j.state IN ('queued','scanning')`).get().size;
+            if (pendingBytes + activeUploadReservation + chunk.length > config.maxGlobalStaging) {
+              return callback(error(507, 'Upload staging capacity is currently full'));
+            }
+            activeUploadReservation += chunk.length;
+            reservation.bytes += chunk.length;
+          }
+          size = nextSize;
           callback(null, chunk);
         }
       });
@@ -851,18 +874,13 @@ function collectUpload(req, userId) {
 app.post('/api/upload', requireAuth, async (req, res, next) => {
   let upload;
   let acquiredSlot = false;
+  const uploadReservation = { bytes: 0 };
   let ownerId = req.user.id;
   try {
     if (activeUploads >= config.maxConcurrentUploads) throw error(429, 'Too many concurrent uploads');
-    const pendingBytes = db.prepare(`SELECT COALESCE(SUM(f.size), 0) AS size FROM scan_jobs j JOIN files f ON f.id=j.file_id
-      WHERE j.state IN ('queued','scanning')`).get().size;
-    if (pendingBytes + activeUploadReservation + config.maxFileSize > config.maxGlobalStaging) {
-      throw error(507, 'Upload staging capacity is currently full');
-    }
     activeUploads += 1;
-    activeUploadReservation += config.maxFileSize;
     acquiredSlot = true;
-    upload = await collectUpload(req, req.user.id);
+    upload = await collectUpload(req, uploadReservation);
     let folderId = null;
     if (upload.folderId) {
       const access = getFolderAccess(req.user.id, upload.folderId);
@@ -891,7 +909,7 @@ app.post('/api/upload', requireAuth, async (req, res, next) => {
   } finally {
     if (acquiredSlot) {
       activeUploads -= 1;
-      activeUploadReservation -= config.maxFileSize;
+      activeUploadReservation -= uploadReservation.bytes;
     }
   }
 });
@@ -1132,11 +1150,13 @@ queueTimer.unref();
 const sessionCleanup = setInterval(() => {
   db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(now());
   db.prepare('DELETE FROM audit_log WHERE created_at < ?').run(now() - 90 * 86400000);
-  const cutoff = now() - config.quarantineRetentionDays * 86400000;
-  const expiredQuarantine = db.prepare('SELECT id, storage_key FROM quarantine_records WHERE created_at < ?').all(cutoff);
-  for (const record of expiredQuarantine) {
-    fs.rmSync(path.join(config.quarantineDirectory, record.storage_key), { force: true });
-    db.prepare('DELETE FROM quarantine_records WHERE id=?').run(record.id);
+  if (Number.isFinite(config.quarantineRetentionMs)) {
+    const cutoff = now() - config.quarantineRetentionMs;
+    const expiredQuarantine = db.prepare('SELECT id, storage_key FROM quarantine_records WHERE created_at < ?').all(cutoff);
+    for (const record of expiredQuarantine) {
+      fs.rmSync(path.join(config.quarantineDirectory, record.storage_key), { force: true });
+      db.prepare('DELETE FROM quarantine_records WHERE id=?').run(record.id);
+    }
   }
 }, 60 * 60 * 1000);
 sessionCleanup.unref();

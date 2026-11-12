@@ -1,13 +1,13 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import zlib from 'node:zlib';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 let child;
@@ -491,5 +491,136 @@ test('whitelist can be disabled to allow registration and login without a whitel
       await new Promise((resolve) => disabledServer.once('exit', resolve));
     }
     await fs.rm(disabledDataDirectory, { recursive: true, force: true });
+  }
+});
+
+test('numeric limits accept unlimited and values above previous ceilings', { timeout: 30000 }, async () => {
+  const unlimitedDataDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'simple-file-store-unlimited-'));
+  const highFileLimitConfig = spawnSync(process.execPath, [
+    '--input-type=module',
+    '-e',
+    `import(${JSON.stringify(pathToFileURL(path.join(root, 'src', 'config.js')).href)})`
+  ], {
+    cwd: unlimitedDataDirectory,
+    env: {
+      ...process.env,
+      NODE_ENV: 'production',
+      SESSION_SECRET: crypto.randomBytes(48).toString('hex'),
+      WHITELISTFEATURE: 'FALSE',
+      PORT: '3000',
+      SESSION_MAX_AGE_HOURS: '24',
+      MAX_FILE_SIZE_MB: '2049',
+      MAX_STORAGE_MB: '0',
+      MAX_CONCURRENT_UPLOADS: '3',
+      MAX_GLOBAL_STAGING_MB: '0',
+      MAX_GLOBAL_QUARANTINE_MB: '0',
+      SCAN_CONCURRENCY: '1',
+      SCAN_TIMEOUT_SECONDS: '120',
+      MAX_SCAN_FILE_SIZE_MB: '0',
+      QUARANTINE_RETENTION_DAYS: '0',
+      MAX_ARCHIVE_ENTRIES: '100001',
+      MAX_ARCHIVE_UNCOMPRESSED_MB: '0',
+      MAX_ARCHIVE_ENTRY_MB: '0',
+      MAX_ARCHIVE_COMPRESSION_RATIO: '10001'
+    }
+  });
+  assert.equal(highFileLimitConfig.status, 0, highFileLimitConfig.stderr.toString());
+
+  const port = await unusedPort();
+  const url = `http://127.0.0.1:${port}`;
+  const unlimitedServer = spawn(process.execPath, ['src/server.js'], {
+    cwd: root,
+    env: {
+      ...process.env,
+      NODE_ENV: 'production',
+      PORT: String(port),
+      HOST: '127.0.0.1',
+      DATA_DIRECTORY: unlimitedDataDirectory,
+      SESSION_SECRET: crypto.randomBytes(48).toString('hex'),
+      WHITELISTFEATURE: 'FALSE',
+      WHITELIST: '',
+      COOKIE_SECURE: 'false',
+      SESSION_MAX_AGE_HOURS: '0',
+      MAX_FILE_SIZE_MB: '0',
+      MAX_STORAGE_MB: '0',
+      MAX_CONCURRENT_UPLOADS: '0',
+      MAX_GLOBAL_STAGING_MB: '0',
+      MAX_GLOBAL_QUARANTINE_MB: '0',
+      SCAN_CONCURRENCY: '0',
+      SCAN_TIMEOUT_SECONDS: '0',
+      MAX_SCAN_FILE_SIZE_MB: '0',
+      QUARANTINE_RETENTION_DAYS: '0',
+      MAX_ARCHIVE_ENTRIES: '100001',
+      MAX_ARCHIVE_UNCOMPRESSED_MB: '0',
+      MAX_ARCHIVE_ENTRY_MB: '0',
+      MAX_ARCHIVE_COMPRESSION_RATIO: '10001'
+    },
+    stdio: 'ignore'
+  });
+
+  try {
+    let healthy = false;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (unlimitedServer.exitCode !== null) {
+        throw new Error(`Test server exited with ${unlimitedServer.exitCode}`);
+      }
+      try {
+        const response = await fetch(`${url}/healthz`);
+        if (response.ok) {
+          healthy = true;
+          break;
+        }
+      } catch { }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.equal(healthy, true, 'Test server did not start with the configured limits');
+
+    const credentials = { username: 'unlimited-user', password: '12345678' };
+    const registration = await fetch(`${url}/api/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(credentials)
+    });
+    assert.equal(registration.status, 201);
+    const login = await fetch(`${url}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(credentials)
+    });
+    assert.equal(login.status, 200);
+    const loginResult = await login.json();
+    const cookie = login.headers.get('set-cookie').split(';')[0];
+    assert.doesNotMatch(login.headers.get('set-cookie'), /Max-Age=/);
+
+    const storage = await fetch(`${url}/api/storage`, { headers: { Cookie: cookie } });
+    assert.equal(storage.status, 200);
+    assert.deepEqual(await storage.json(), { used: 0, limit: null, remaining: null });
+
+    const form = new FormData();
+    form.append('file', new Blob(['unlimited upload']), 'unlimited.txt');
+    const upload = await fetch(`${url}/api/upload`, {
+      method: 'POST',
+      headers: { Cookie: cookie, 'X-CSRF-Token': loginResult.csrfToken },
+      body: form
+    });
+    assert.equal(upload.status, 202);
+    const uploaded = await upload.json();
+    let scanPassed = false;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const listing = await fetch(`${url}/api/files`, { headers: { Cookie: cookie } });
+      const files = await listing.json();
+      if (files.files.some((file) => file.id === uploaded.id && file.status === 'SCAN_PASSED')) {
+        scanPassed = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.equal(scanPassed, true, 'Uploaded file did not pass scanning');
+  } finally {
+    if (unlimitedServer.exitCode === null) {
+      unlimitedServer.kill('SIGTERM');
+      await new Promise((resolve) => unlimitedServer.once('exit', resolve));
+    }
+    await fs.rm(unlimitedDataDirectory, { recursive: true, force: true });
   }
 });
