@@ -267,8 +267,8 @@ app.post('/api/auth/register', async (req, res, next) => {
     const password = req.body?.password;
     if (!/^[a-zA-Z0-9_.-]{3,32}$/.test(username)) throw error(400, 'Username must be 3–32 letters, numbers, dots, dashes, or underscores');
     if (!isWhitelisted(username)) throw error(403, 'Registration is not available for this username');
-    if (typeof password !== 'string' || password.length < 12 || password.length > 1024) {
-      throw error(400, 'Password must be at least 12 characters');
+    if (typeof password !== 'string' || password.length < 8 || password.length > 1024) {
+      throw error(400, 'Password must be at least 8 characters');
     }
     const salt = crypto.randomBytes(16);
     const hash = await passwordHash(password, salt);

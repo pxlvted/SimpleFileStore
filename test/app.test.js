@@ -460,7 +460,14 @@ test('whitelist can be disabled to allow registration and login without a whitel
     assert.equal(page.headers.get('x-content-type-options'), 'nosniff');
     assert.equal(page.headers.get('x-frame-options'), 'SAMEORIGIN');
 
-    const credentials = { username: 'unlisted-user', password: 'correct horse battery staple' };
+    const tooShortRegistration = await fetch(`${url}/api/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'short-password-user', password: '1234567' })
+    });
+    assert.equal(tooShortRegistration.status, 400);
+
+    const credentials = { username: 'unlisted-user', password: '12345678' };
     const registration = await fetch(`${url}/api/auth/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
