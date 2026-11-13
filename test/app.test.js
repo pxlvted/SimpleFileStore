@@ -279,7 +279,7 @@ before(async () => {
       DATA_DIRECTORY: dataDirectory,
       SESSION_SECRET: crypto.randomBytes(48).toString('hex'),
       WHITELISTFEATURE: 'TRUE',
-      WHITELIST: 'alice,bob,mfa-user,otp-delete-user',
+      WHITELIST: 'alice,bob,mfa-user,otp-delete-user,trash-otp-user',
       COOKIE_SECURE: 'false',
       MAX_FILE_SIZE_MB: '2',
       MAX_STORAGE_MB: '1',
@@ -627,7 +627,7 @@ test('authentication, isolated storage, scanning, editing, and quarantine', { ti
 test('authenticator setup, sign-in, rotation, and disable require valid codes', { timeout: 90000 }, async () => {
   const session = await createSession('mfa-user');
   const status = await request('/api/auth/otp', {}, session);
-  assert.deepEqual(await json(status), { enabled: false });
+  assert.deepEqual(await json(status), { enabled: false, trashDeletionOtpRequired: false });
 
   const setupResponse = await request('/api/auth/otp/setup', {
     method: 'POST',
@@ -653,7 +653,7 @@ test('authenticator setup, sign-in, rotation, and disable require valid codes', 
 
   const enabledStatus = await request('/api/auth/otp', {}, session);
   const statusPayload = await json(enabledStatus);
-  assert.deepEqual(statusPayload, { enabled: true });
+  assert.deepEqual(statusPayload, { enabled: true, trashDeletionOtpRequired: false });
   assert.equal(Object.hasOwn(statusPayload, 'secret'), false);
 
   const login = await request('/api/auth/login', {
@@ -712,8 +712,11 @@ test('authenticator setup, sign-in, rotation, and disable require valid codes', 
     body: JSON.stringify({ code: authenticatorCode(rotation.secret, disableCounter + 1) })
   }, authenticated);
   assert.equal(disable.status, 200);
-  assert.deepEqual(await json(disable), { enabled: false });
-  assert.deepEqual(await json(await request('/api/auth/otp', {}, authenticated)), { enabled: false });
+  assert.deepEqual(await json(disable), { enabled: false, trashDeletionOtpRequired: false });
+  assert.deepEqual(await json(await request('/api/auth/otp', {}, authenticated)), {
+    enabled: false,
+    trashDeletionOtpRequired: false
+  });
 
   const deletionSession = await createSession('otp-delete-user');
   const deletionSetupResponse = await request('/api/auth/otp/setup', {
@@ -748,6 +751,133 @@ test('authenticator setup, sign-in, rotation, and disable require valid codes', 
     })
   }, deletionSession);
   assert.equal(verifiedDeletion.status, 200);
+});
+
+test('trash deletion OTP protection can be enabled and requires OTP to disable and delete', { timeout: 150000 }, async () => {
+  const session = await createSession('trash-otp-user');
+  const enableBeforeOtp = await request('/api/auth/trash-deletion-protection', {
+    method: 'POST',
+    body: JSON.stringify({ enabled: true })
+  }, session);
+  assert.equal(enableBeforeOtp.status, 400);
+
+  const setupResponse = await request('/api/auth/otp/setup', {
+    method: 'POST',
+    body: JSON.stringify({})
+  }, session);
+  const setup = await json(setupResponse);
+  const setupCounter = Math.floor(Date.now() / 30000);
+  const confirm = await request('/api/auth/otp/confirm', {
+    method: 'POST',
+    body: JSON.stringify({ code: authenticatorCode(setup.secret, setupCounter - 1) })
+  }, session);
+  assert.equal(confirm.status, 200);
+  let lastCodeCounter = setupCounter - 1;
+  async function nextCode() {
+    await waitForTotpCounter(lastCodeCounter + 1);
+    lastCodeCounter = Math.floor(Date.now() / 30000);
+    return authenticatorCode(setup.secret, lastCodeCounter);
+  }
+
+  const enabled = await request('/api/auth/trash-deletion-protection', {
+    method: 'POST',
+    body: JSON.stringify({ enabled: true })
+  }, session);
+  assert.equal(enabled.status, 200);
+  assert.deepEqual(await json(await request('/api/auth/otp', {}, session)), {
+    enabled: true,
+    trashDeletionOtpRequired: true
+  });
+
+  const missingDisableCode = await request('/api/auth/trash-deletion-protection', {
+    method: 'POST',
+    body: JSON.stringify({ enabled: false })
+  }, session);
+  assert.equal(missingDisableCode.status, 401);
+  const invalidDisableCode = await request('/api/auth/trash-deletion-protection', {
+    method: 'POST',
+    body: JSON.stringify({ enabled: false, code: 'invalid' })
+  }, session);
+  assert.equal(invalidDisableCode.status, 401);
+  const disableAuthenticator = await request('/api/auth/otp/disable', {
+    method: 'POST',
+    body: JSON.stringify({ code: 'invalid' })
+  }, session);
+  assert.equal(disableAuthenticator.status, 401);
+  assert.deepEqual(await json(await request('/api/auth/otp', {}, session)), {
+    enabled: true,
+    trashDeletionOtpRequired: true
+  });
+
+  async function uploadAndTrash(name) {
+    const form = new FormData();
+    form.append('file', new Blob([name]), name);
+    const upload = await request('/api/upload', { method: 'POST', body: form }, session);
+    assert.equal(upload.status, 202);
+    const file = await json(upload);
+    await waitForStatus(session, file.id, 'SCAN_PASSED');
+    const trash = await request(`/api/files/${file.id}`, { method: 'DELETE' }, session);
+    assert.equal(trash.status, 200);
+    return file.id;
+  }
+
+  const fileId = await uploadAndTrash('protected.txt');
+  const missingFileCode = await request(`/api/files/${fileId}?permanent=true`, {
+    method: 'DELETE',
+    body: JSON.stringify({})
+  }, session);
+  assert.equal(missingFileCode.status, 401);
+  const invalidFileCode = await request(`/api/files/${fileId}?permanent=true`, {
+    method: 'DELETE',
+    body: JSON.stringify({ code: 'invalid' })
+  }, session);
+  assert.equal(invalidFileCode.status, 401);
+  const permanentDelete = await request(`/api/files/${fileId}?permanent=true`, {
+    method: 'DELETE',
+    body: JSON.stringify({ code: await nextCode() })
+  }, session);
+  assert.equal(permanentDelete.status, 200);
+
+  await uploadAndTrash('protected-empty.txt');
+  const missingEmptyCode = await request('/api/trash/empty', {
+    method: 'POST',
+    body: JSON.stringify({})
+  }, session);
+  assert.equal(missingEmptyCode.status, 401);
+  const emptyTrash = await request('/api/trash/empty', {
+    method: 'POST',
+    body: JSON.stringify({ code: await nextCode() })
+  }, session);
+  assert.equal(emptyTrash.status, 200);
+
+  const disabled = await request('/api/auth/trash-deletion-protection', {
+    method: 'POST',
+    body: JSON.stringify({ enabled: false, code: await nextCode() })
+  }, session);
+  assert.equal(disabled.status, 200);
+  assert.deepEqual(await json(await request('/api/auth/otp', {}, session)), {
+    enabled: true,
+    trashDeletionOtpRequired: false
+  });
+
+  const reenabled = await request('/api/auth/trash-deletion-protection', {
+    method: 'POST',
+    body: JSON.stringify({ enabled: true })
+  }, session);
+  assert.equal(reenabled.status, 200);
+  const disableAuthenticatorWithProtection = await request('/api/auth/otp/disable', {
+    method: 'POST',
+    body: JSON.stringify({ code: await nextCode() })
+  }, session);
+  assert.equal(disableAuthenticatorWithProtection.status, 200);
+  assert.deepEqual(await json(disableAuthenticatorWithProtection), {
+    enabled: false,
+    trashDeletionOtpRequired: false
+  });
+  assert.deepEqual(await json(await request('/api/auth/otp', {}, session)), {
+    enabled: false,
+    trashDeletionOtpRequired: false
+  });
 });
 
 test('nested archives are rejected when nested inspection is disabled', async () => {

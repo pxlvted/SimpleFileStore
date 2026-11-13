@@ -180,6 +180,17 @@
           <div class="otp-action-row"><input id="otp-disable-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6"><button class="button danger" id="otp-disable" type="button">Turn off</button></div>
         </div>
       </section>
+      <section id="trash-delete-settings">
+        <h3>Protect permanent trash deletion</h3>
+        <p id="trash-delete-otp-status" class="muted">Loading setting…</p>
+        <div id="trash-delete-otp-disabled">
+          <button class="button secondary" id="trash-delete-otp-enable" type="button">Require authenticator code</button>
+        </div>
+        <div id="trash-delete-otp-enabled" class="hidden">
+          <label for="trash-delete-otp-code">Current authenticator code to turn off protection</label>
+          <div class="otp-action-row"><input id="trash-delete-otp-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6"><button class="button danger" id="trash-delete-otp-disable" type="button">Turn off protection</button></div>
+        </div>
+      </section>
       <section id="otp-enrollment" class="hidden">
         <p id="otp-enrollment-instructions" class="muted">Scan this QR code with your authenticator app, or enter the secret manually. The secret will not be shown again after confirmation.</p>
         <img id="otp-qr" alt="Authenticator setup QR code">

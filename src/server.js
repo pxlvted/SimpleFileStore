@@ -200,6 +200,19 @@ function consumeOtp(userId, secret, code) {
     .run(counter, userId, counter).changes === 1;
 }
 
+function requireTrashDeletionOtp(userId, code) {
+  const user = db.prepare(`SELECT otp_secret, trash_delete_otp_required
+    FROM users WHERE id=?`).get(userId);
+  if (!user.trash_delete_otp_required) return;
+  if (!user.otp_secret) throw error(409, 'Enable authenticator verification before requiring it for trash deletion');
+  const attemptKey = recordOtpActionAttempt(userId);
+  if (!consumeOtp(userId, decryptOtpSecret(user.otp_secret), code)) {
+    audit(userId, 'trash_deletion_otp_failed');
+    throw error(401, 'Enter a valid authenticator code to delete items from Trash');
+  }
+  loginAttempts.delete(attemptKey);
+}
+
 function authenticate(req, res, next) {
   const token = getCookie(req, 'session');
   if (!token || token.length > 256) return next(error(401, 'Authentication required'));
@@ -492,8 +505,36 @@ app.get('/api/auth/me', authenticate, (req, res) => {
 });
 
 app.get('/api/auth/otp', requireAuth, (req, res) => {
-  const user = db.prepare('SELECT otp_secret FROM users WHERE id=?').get(req.user.id);
-  res.json({ enabled: Boolean(user.otp_secret) });
+  const user = db.prepare(`SELECT otp_secret, trash_delete_otp_required
+    FROM users WHERE id=?`).get(req.user.id);
+  res.json({
+    enabled: Boolean(user.otp_secret),
+    trashDeletionOtpRequired: Boolean(user.trash_delete_otp_required)
+  });
+});
+
+app.post('/api/auth/trash-deletion-protection', requireAuth, (req, res, next) => {
+  try {
+    const enabled = req.body?.enabled;
+    if (typeof enabled !== 'boolean') throw error(400, 'Choose whether to require authenticator verification for trash deletion');
+    const user = db.prepare(`SELECT otp_secret, trash_delete_otp_required
+      FROM users WHERE id=?`).get(req.user.id);
+    if (enabled && !user.otp_secret) {
+      throw error(400, 'Enable authenticator verification before requiring it for trash deletion');
+    }
+    if (!enabled && user.trash_delete_otp_required) {
+      const attemptKey = recordOtpActionAttempt(req.user.id);
+      if (!user.otp_secret || !consumeOtp(req.user.id, decryptOtpSecret(user.otp_secret), req.body?.code)) {
+        audit(req.user.id, 'trash_deletion_protection_disable_failed');
+        throw error(401, 'Enter a valid authenticator code to turn off trash deletion protection');
+      }
+      loginAttempts.delete(attemptKey);
+    }
+    db.prepare('UPDATE users SET trash_delete_otp_required=? WHERE id=?')
+      .run(enabled ? 1 : 0, req.user.id);
+    audit(req.user.id, enabled ? 'trash_deletion_protection_enabled' : 'trash_deletion_protection_disabled');
+    res.json({ trashDeletionOtpRequired: enabled });
+  } catch (err) { next(err); }
 });
 
 app.post('/api/auth/otp/setup', requireAuth, async (req, res, next) => {
@@ -549,11 +590,12 @@ app.post('/api/auth/otp/disable', requireAuth, (req, res, next) => {
       throw error(401, 'Enter a valid authenticator code to turn off verification');
     }
     loginAttempts.delete(otpAttemptKey);
-    db.prepare(`UPDATE users SET otp_secret=NULL, otp_pending_secret=NULL, otp_last_counter=NULL
+    db.prepare(`UPDATE users SET otp_secret=NULL, otp_pending_secret=NULL, otp_last_counter=NULL,
+      trash_delete_otp_required=0
       WHERE id=?`).run(req.user.id);
     db.prepare('DELETE FROM login_challenges WHERE user_id=?').run(req.user.id);
     audit(req.user.id, 'otp_disabled');
-    res.json({ enabled: false });
+    res.json({ enabled: false, trashDeletionOtpRequired: false });
   } catch (err) { next(err); }
 });
 
@@ -1324,6 +1366,7 @@ app.delete('/api/files/:id', requireAuth, (req, res, next) => {
     if (!file) throw error(404, 'File not found');
     if (req.query.permanent === 'true') {
       if (file.user_id !== req.user.id) throw error(403, 'Only the owner can permanently delete a file');
+      requireTrashDeletionOtp(req.user.id, req.body?.code);
       if (file.storage_key) fs.rmSync(path.join(config.storageDirectory, file.user_id, file.storage_key), { force: true });
       removeQuarantineForFile(file.id);
       db.prepare('DELETE FROM scan_jobs WHERE file_id=?').run(file.id);
@@ -1403,6 +1446,7 @@ app.post('/api/files/:id/restore', requireAuth, (req, res, next) => {
 
 app.post('/api/trash/empty', requireAuth, async (req, res, next) => {
   try {
+    requireTrashDeletionOtp(req.user.id, req.body?.code);
     const files = db.prepare('SELECT * FROM files WHERE user_id=? AND deleted_at IS NOT NULL').all(req.user.id);
     const folders = db.prepare('SELECT id FROM folders WHERE user_id=? AND deleted_at IS NOT NULL').all(req.user.id);
     for (const file of files) {

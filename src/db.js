@@ -17,6 +17,7 @@ db.exec(`
     otp_secret TEXT,
     otp_pending_secret TEXT,
     otp_last_counter INTEGER,
+    trash_delete_otp_required INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
   );
   CREATE TABLE IF NOT EXISTS login_challenges (
@@ -116,7 +117,8 @@ if (!db.pragma('table_info(scan_jobs)').some((column) => column.name === 'previo
 for (const [column, definition] of [
   ['otp_secret', 'TEXT'],
   ['otp_pending_secret', 'TEXT'],
-  ['otp_last_counter', 'INTEGER']
+  ['otp_last_counter', 'INTEGER'],
+  ['trash_delete_otp_required', 'INTEGER NOT NULL DEFAULT 0']
 ]) {
   if (!db.pragma('table_info(users)').some((entry) => entry.name === column)) {
     db.exec(`ALTER TABLE users ADD COLUMN ${column} ${definition}`);

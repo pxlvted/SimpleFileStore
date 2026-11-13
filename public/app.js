@@ -756,7 +756,12 @@ async function handleAction(event) {
       await loadStorage();
     } else if (action === 'purge') {
       if (!confirm(`Permanently delete “${file.name}”? This cannot be undone.`)) return;
-      await api(`/api/files/${itemId}?permanent=true`, { method: 'DELETE' });
+      const code = await getTrashDeletionCode();
+      if (code === null) return;
+      await api(`/api/files/${itemId}?permanent=true`, {
+        method: 'DELETE',
+        body: JSON.stringify(code === undefined ? {} : { code })
+      });
       await loadCurrent();
       await loadStorage();
     } else if (action === 'restore') {
@@ -1016,11 +1021,22 @@ $('#share-cancel').addEventListener('click', closeShareDialog);
 async function emptyTrash() {
   if (!confirm('Permanently delete everything in Trash? This cannot be undone.')) return;
   try {
-    await api('/api/trash/empty', { method: 'POST', body: '{}' });
+    const code = await getTrashDeletionCode();
+    if (code === null) return;
+    await api('/api/trash/empty', {
+      method: 'POST',
+      body: JSON.stringify(code === undefined ? {} : { code })
+    });
     toast('Trash emptied');
     await loadCurrent();
     await loadStorage();
   } catch (error) { toast(error.message, true); }
+}
+
+async function getTrashDeletionCode() {
+  const settings = await api('/api/auth/otp');
+  if (!settings.trashDeletionOtpRequired) return undefined;
+  return prompt('Enter your current authenticator code to permanently delete items from Trash.');
 }
 
 async function openEditor(file) {
@@ -1083,6 +1099,15 @@ async function loadOtpSettings() {
   $('#otp-enabled-actions').classList.toggle('hidden', !result.enabled);
   $('#otp-rotate-code').value = '';
   $('#otp-disable-code').value = '';
+  $('#trash-delete-otp-status').textContent = result.trashDeletionOtpRequired
+    ? 'A current authenticator code is required to permanently delete items from Trash or empty Trash.'
+    : result.enabled
+      ? 'Permanently deleting items from Trash does not require an authenticator code.'
+      : 'Enable authenticator verification before protecting permanent trash deletion.';
+  $('#trash-delete-otp-disabled').classList.toggle('hidden', result.trashDeletionOtpRequired);
+  $('#trash-delete-otp-enabled').classList.toggle('hidden', !result.trashDeletionOtpRequired);
+  $('#trash-delete-otp-enable').disabled = !result.enabled;
+  $('#trash-delete-otp-code').value = '';
 }
 
 function clearOtpEnrollment() {
@@ -1162,6 +1187,39 @@ $('#otp-disable').addEventListener('click', async () => {
     });
     await loadOtpSettings();
     toast('Authenticator verification is off.');
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$('#trash-delete-otp-enable').addEventListener('click', async () => {
+  const button = $('#trash-delete-otp-enable');
+  button.disabled = true;
+  try {
+    await api('/api/auth/trash-deletion-protection', {
+      method: 'POST',
+      body: JSON.stringify({ enabled: true })
+    });
+    await loadOtpSettings();
+    toast('Authenticator verification is required for permanent trash deletion.');
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
+$('#trash-delete-otp-disable').addEventListener('click', async () => {
+  const button = $('#trash-delete-otp-disable');
+  button.disabled = true;
+  try {
+    await api('/api/auth/trash-deletion-protection', {
+      method: 'POST',
+      body: JSON.stringify({ enabled: false, code: $('#trash-delete-otp-code').value })
+    });
+    await loadOtpSettings();
+    toast('Authenticator protection for permanent trash deletion is off.');
   } catch (error) {
     toast(error.message, true);
   } finally {
