@@ -14,7 +14,16 @@ db.exec(`
     username TEXT NOT NULL COLLATE NOCASE UNIQUE,
     password_hash TEXT NOT NULL,
     password_salt TEXT NOT NULL,
+    otp_secret TEXT,
+    otp_pending_secret TEXT,
+    otp_last_counter INTEGER,
     created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS login_challenges (
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at INTEGER NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0
   );
   CREATE TABLE IF NOT EXISTS sessions (
     token_hash TEXT PRIMARY KEY,
@@ -103,6 +112,15 @@ if (!db.pragma('table_info(quarantine_records)').some((column) => column.name ==
 }
 if (!db.pragma('table_info(scan_jobs)').some((column) => column.name === 'previous_size')) {
   db.exec('ALTER TABLE scan_jobs ADD COLUMN previous_size INTEGER');
+}
+for (const [column, definition] of [
+  ['otp_secret', 'TEXT'],
+  ['otp_pending_secret', 'TEXT'],
+  ['otp_last_counter', 'INTEGER']
+]) {
+  if (!db.pragma('table_info(users)').some((entry) => entry.name === column)) {
+    db.exec(`ALTER TABLE users ADD COLUMN ${column} ${definition}`);
+  }
 }
 
 export function audit(userId, event, detail = '') {

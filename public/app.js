@@ -9,6 +9,7 @@ const state = {
   sort: 'name',
   sortDirection: 1,
   authMode: 'login',
+  authChallenge: null,
   searchTimer: null,
   refreshTimer: null,
   editing: null,
@@ -73,11 +74,15 @@ function showAuth() {
   authPage.classList.remove('hidden');
   state.csrf = '';
   state.username = '';
+  resetAuthChallenge();
 }
 
 function showApplication(username, csrfToken) {
   state.username = username;
   state.csrf = csrfToken;
+  state.authChallenge = null;
+  $('#password').value = '';
+  $('#auth-otp-code').value = '';
   $('#profile-name').textContent = username;
   $('#avatar').textContent = username.slice(0, 1).toUpperCase();
   authPage.classList.add('hidden');
@@ -472,18 +477,56 @@ function setAuthMode(mode) {
   $('#auth-switch').textContent = registering ? 'Sign in' : 'Create an account';
 }
 
-$('#auth-switch').addEventListener('click', () => setAuthMode(state.authMode === 'login' ? 'register' : 'login'));
+function resetAuthChallenge() {
+  state.authChallenge = null;
+  $('#auth-credentials').classList.remove('hidden');
+  $('#username').disabled = false;
+  $('#username').required = true;
+  $('#password').disabled = false;
+  $('#password').required = true;
+  $('#auth-otp').classList.add('hidden');
+  $('#auth-otp-code').required = false;
+  $('#auth-otp-code').value = '';
+  $('#auth-submit').textContent = state.authMode === 'register' ? 'Create account' : 'Sign in';
+}
+
+$('#auth-switch').addEventListener('click', () => {
+  resetAuthChallenge();
+  setAuthMode(state.authMode === 'login' ? 'register' : 'login');
+});
+$('#auth-otp-back').addEventListener('click', resetAuthChallenge);
 $('#auth-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const button = $('#auth-submit');
   button.disabled = true;
   try {
+    if (state.authChallenge) {
+      const result = await api('/api/auth/login/otp', {
+        method: 'POST',
+        body: JSON.stringify({ challengeToken: state.authChallenge, code: $('#auth-otp-code').value })
+      });
+      showApplication(result.username, result.csrfToken);
+      return;
+    }
     const data = Object.fromEntries(new FormData(event.currentTarget).entries());
     const result = await api(`/api/auth/${state.authMode}`, { method: 'POST', body: JSON.stringify(data) });
     if (state.authMode === 'register') {
       toast('Account created. You can now sign in.');
       setAuthMode('login');
       $('#password').value = '';
+      return;
+    }
+    if (result.requiresOtp) {
+      state.authChallenge = result.challengeToken;
+      $('#auth-credentials').classList.add('hidden');
+      $('#username').disabled = true;
+      $('#username').required = false;
+      $('#password').disabled = true;
+      $('#password').required = false;
+      $('#auth-otp').classList.remove('hidden');
+      $('#auth-otp-code').required = true;
+      $('#auth-submit').textContent = 'Verify code';
+      $('#auth-otp-code').focus();
       return;
     }
     showApplication(result.username, result.csrfToken);
@@ -1029,6 +1072,101 @@ $('#logout-button').addEventListener('click', async () => {
   try { await api('/api/auth/logout', { method: 'POST', body: '{}' }); }
   catch (error) { toast(error.message, true); }
   showAuth();
+});
+
+async function loadOtpSettings() {
+  const result = await api('/api/auth/otp');
+  $('#otp-status').textContent = result.enabled
+    ? 'Authenticator verification is on. Use your authenticator app when signing in.'
+    : 'Authenticator verification is off.';
+  $('#otp-disabled-actions').classList.toggle('hidden', result.enabled);
+  $('#otp-enabled-actions').classList.toggle('hidden', !result.enabled);
+  $('#otp-rotate-code').value = '';
+  $('#otp-disable-code').value = '';
+}
+
+function clearOtpEnrollment() {
+  $('#otp-enrollment').classList.add('hidden');
+  $('#otp-settings').classList.remove('hidden');
+  $('#otp-qr').removeAttribute('src');
+  $('#otp-secret').textContent = '';
+  $('#otp-confirm-code').value = '';
+}
+
+async function beginOtpSetup(rotation) {
+  const button = rotation ? $('#otp-rotate') : $('#otp-enable');
+  button.disabled = true;
+  try {
+    const code = rotation ? $('#otp-rotate-code').value : undefined;
+    const result = await api('/api/auth/otp/setup', {
+      method: 'POST',
+      body: JSON.stringify(code ? { code } : {})
+    });
+    $('#otp-settings').classList.add('hidden');
+    $('#otp-enrollment').classList.remove('hidden');
+    $('#otp-enrollment-instructions').textContent = rotation
+      ? 'Scan this new QR code with your authenticator app and confirm it with a code from the new setup. Your existing authenticator remains active until confirmation.'
+      : 'Scan this QR code with your authenticator app, or enter the secret manually. The secret will not be shown again after confirmation.';
+    $('#otp-qr').src = result.qrCode;
+    $('#otp-secret').textContent = result.secret;
+    $('#otp-confirm-code').focus();
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+$('#settings-button').addEventListener('click', async () => {
+  $('#profile-menu').classList.add('hidden');
+  clearOtpEnrollment();
+  $('#settings-dialog').classList.remove('hidden');
+  try { await loadOtpSettings(); }
+  catch (error) { toast(error.message, true); }
+});
+$('#settings-close').addEventListener('click', () => {
+  clearOtpEnrollment();
+  $('#settings-dialog').classList.add('hidden');
+});
+$('#otp-enable').addEventListener('click', () => beginOtpSetup(false));
+$('#otp-rotate').addEventListener('click', () => beginOtpSetup(true));
+$('#otp-enrollment-cancel').addEventListener('click', async () => {
+  clearOtpEnrollment();
+  try { await loadOtpSettings(); }
+  catch (error) { toast(error.message, true); }
+});
+$('#otp-confirm').addEventListener('click', async () => {
+  const button = $('#otp-confirm');
+  button.disabled = true;
+  try {
+    await api('/api/auth/otp/confirm', {
+      method: 'POST',
+      body: JSON.stringify({ code: $('#otp-confirm-code').value })
+    });
+    clearOtpEnrollment();
+    await loadOtpSettings();
+    toast('Authenticator verification is enabled.');
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
+$('#otp-disable').addEventListener('click', async () => {
+  const button = $('#otp-disable');
+  button.disabled = true;
+  try {
+    await api('/api/auth/otp/disable', {
+      method: 'POST',
+      body: JSON.stringify({ code: $('#otp-disable-code').value })
+    });
+    await loadOtpSettings();
+    toast('Authenticator verification is off.');
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
 });
 
 function closeDeleteAccountDialog() {

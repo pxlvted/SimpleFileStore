@@ -219,6 +219,34 @@ async function createSession(username) {
   return { cookie: login.headers.get('set-cookie').split(';')[0], csrf: result.csrfToken };
 }
 
+function authenticatorCode(secret, counter = Math.floor(Date.now() / 30000)) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let buffer = 0;
+  let bits = 0;
+  const bytes = [];
+  for (const character of secret) {
+    buffer = (buffer << 5) | alphabet.indexOf(character);
+    bits += 5;
+    if (bits >= 8) {
+      bits -= 8;
+      bytes.push((buffer >> bits) & 255);
+      buffer &= (1 << bits) - 1;
+    }
+  }
+  const counterBytes = Buffer.alloc(8);
+  counterBytes.writeUInt32BE(Math.floor(counter / 0x100000000), 0);
+  counterBytes.writeUInt32BE(counter >>> 0, 4);
+  const digest = crypto.createHmac('sha1', Buffer.from(bytes)).update(counterBytes).digest();
+  const offset = digest[digest.length - 1] & 15;
+  return String((digest.readUInt32BE(offset) & 0x7fffffff) % 1000000).padStart(6, '0');
+}
+
+async function waitForTotpCounter(counter) {
+  while (Math.floor(Date.now() / 30000) < counter) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 async function waitForStatus(session, fileId, expected, folderId = null) {
   let lastStatus = 'not listed';
   for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -251,7 +279,7 @@ before(async () => {
       DATA_DIRECTORY: dataDirectory,
       SESSION_SECRET: crypto.randomBytes(48).toString('hex'),
       WHITELISTFEATURE: 'TRUE',
-      WHITELIST: 'alice,bob',
+      WHITELIST: 'alice,bob,mfa-user',
       COOKIE_SECURE: 'false',
       MAX_FILE_SIZE_MB: '2',
       MAX_STORAGE_MB: '1',
@@ -594,6 +622,98 @@ test('authentication, isolated storage, scanning, editing, and quarantine', { ti
   assert.equal(deletedData.prepare('SELECT COUNT(*) AS count FROM shares WHERE owner_id=? OR recipient_id=?').get(aliceId, aliceId).count, 0);
   assert.equal(deletedData.prepare('SELECT COUNT(*) AS count FROM audit_log WHERE user_id=?').get(aliceId).count, 0);
   deletedData.close();
+});
+
+test('authenticator setup, sign-in, rotation, and disable require valid codes', { timeout: 90000 }, async () => {
+  const session = await createSession('mfa-user');
+  const status = await request('/api/auth/otp', {}, session);
+  assert.deepEqual(await json(status), { enabled: false });
+
+  const setupResponse = await request('/api/auth/otp/setup', {
+    method: 'POST',
+    body: JSON.stringify({})
+  }, session);
+  assert.equal(setupResponse.status, 200);
+  const setup = await json(setupResponse);
+  assert.match(setup.secret, /^[A-Z2-7]+$/);
+  assert.match(setup.qrCode, /^data:image\/png;base64,/);
+
+  const badConfirmation = await request('/api/auth/otp/confirm', {
+    method: 'POST',
+    body: JSON.stringify({ code: 'invalid' })
+  }, session);
+  assert.equal(badConfirmation.status, 401);
+  const initialCounter = Math.floor(Date.now() / 30000);
+  const confirmation = await request('/api/auth/otp/confirm', {
+    method: 'POST',
+    body: JSON.stringify({ code: authenticatorCode(setup.secret, initialCounter) })
+  }, session);
+  assert.equal(confirmation.status, 200);
+  assert.deepEqual(await json(confirmation), { enabled: true });
+
+  const enabledStatus = await request('/api/auth/otp', {}, session);
+  const statusPayload = await json(enabledStatus);
+  assert.deepEqual(statusPayload, { enabled: true });
+  assert.equal(Object.hasOwn(statusPayload, 'secret'), false);
+
+  const login = await request('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ username: 'mfa-user', password: 'correct horse battery staple' })
+  });
+  const loginPayload = await json(login);
+  assert.equal(login.status, 200);
+  assert.equal(loginPayload.requiresOtp, true);
+  assert.equal(login.headers.get('set-cookie'), null);
+  const invalidLoginCode = await request('/api/auth/login/otp', {
+    method: 'POST',
+    body: JSON.stringify({ challengeToken: loginPayload.challengeToken, code: 'invalid' })
+  });
+  assert.equal(invalidLoginCode.status, 401);
+  const loginCode = authenticatorCode(setup.secret, initialCounter + 1);
+  const verifiedLogin = await request('/api/auth/login/otp', {
+    method: 'POST',
+    body: JSON.stringify({ challengeToken: loginPayload.challengeToken, code: loginCode })
+  });
+  assert.equal(verifiedLogin.status, 200);
+  const loginResult = await json(verifiedLogin);
+  const authenticated = { cookie: verifiedLogin.headers.get('set-cookie').split(';')[0], csrf: loginResult.csrfToken };
+  assert.equal((await request('/api/auth/me', {}, authenticated)).status, 200);
+
+  const prematureRotation = await request('/api/auth/otp/setup', {
+    method: 'POST',
+    body: JSON.stringify({ code: loginCode })
+  }, authenticated);
+  assert.equal(prematureRotation.status, 401);
+  await waitForTotpCounter(initialCounter + 1);
+  const rotationCounter = Math.floor(Date.now() / 30000);
+  const rotationResponse = await request('/api/auth/otp/setup', {
+    method: 'POST',
+    body: JSON.stringify({ code: authenticatorCode(setup.secret, rotationCounter + 1) })
+  }, authenticated);
+  assert.equal(rotationResponse.status, 200);
+  const rotation = await json(rotationResponse);
+  assert.notEqual(rotation.secret, setup.secret);
+  const rotatedConfirmation = await request('/api/auth/otp/confirm', {
+    method: 'POST',
+    body: JSON.stringify({ code: authenticatorCode(rotation.secret) })
+  }, authenticated);
+  assert.equal(rotatedConfirmation.status, 200);
+
+  const badDisable = await request('/api/auth/otp/disable', {
+    method: 'POST',
+    body: JSON.stringify({ code: 'invalid' })
+  }, authenticated);
+  assert.equal(badDisable.status, 401);
+  const rotationConfirmedCounter = Math.floor(Date.now() / 30000);
+  await waitForTotpCounter(rotationConfirmedCounter);
+  const disableCounter = Math.floor(Date.now() / 30000);
+  const disable = await request('/api/auth/otp/disable', {
+    method: 'POST',
+    body: JSON.stringify({ code: authenticatorCode(rotation.secret, disableCounter + 1) })
+  }, authenticated);
+  assert.equal(disable.status, 200);
+  assert.deepEqual(await json(disable), { enabled: false });
+  assert.deepEqual(await json(await request('/api/auth/otp', {}, authenticated)), { enabled: false });
 });
 
 test('nested archives are rejected when nested inspection is disabled', async () => {

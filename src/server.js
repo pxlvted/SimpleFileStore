@@ -7,6 +7,7 @@ import { Worker } from 'node:worker_threads';
 import Busboy from 'busboy';
 import express from 'express';
 import helmet from 'helmet';
+import QRCode from 'qrcode';
 import config from './config.js';
 import db, { audit } from './db.js';
 
@@ -39,6 +40,25 @@ app.use('/api', (_req, res, next) => {
 });
 
 const tokenDigest = (token) => crypto.createHmac('sha256', config.sessionSecret).update(token).digest('hex');
+const otpEncryptionKeyPath = path.join(config.dataDirectory, 'otp-encryption.key');
+let otpEncryptionKey;
+try {
+  otpEncryptionKey = fs.readFileSync(otpEncryptionKeyPath);
+} catch (err) {
+  if (err.code !== 'ENOENT') throw err;
+  const configuredOtp = db.prepare(`SELECT 1 FROM users
+    WHERE otp_secret IS NOT NULL OR otp_pending_secret IS NOT NULL LIMIT 1`).get();
+  if (configuredOtp) throw new Error('Authenticator encryption key is missing from the data directory');
+  const generatedKey = crypto.randomBytes(32);
+  try {
+    fs.writeFileSync(otpEncryptionKeyPath, generatedKey, { flag: 'wx', mode: 0o600 });
+    otpEncryptionKey = generatedKey;
+  } catch (writeError) {
+    if (writeError.code !== 'EEXIST') throw writeError;
+    otpEncryptionKey = fs.readFileSync(otpEncryptionKeyPath);
+  }
+}
+if (otpEncryptionKey.length !== 32) throw new Error('Invalid authenticator encryption key');
 const id = () => crypto.randomUUID();
 const now = () => Date.now();
 const safeName = (value) => typeof value === 'string'
@@ -79,6 +99,106 @@ const clearSessionCookie = (res) => {
   if (config.cookieSecure) flags.push('Secure');
   res.setHeader('Set-Cookie', flags.join('; '));
 };
+
+function createSession(req, res, user) {
+  const previousToken = getCookie(req, 'session');
+  if (previousToken && previousToken.length <= 256) {
+    db.prepare('DELETE FROM sessions WHERE token_hash=?').run(tokenDigest(previousToken));
+  }
+  const token = crypto.randomBytes(32).toString('base64url');
+  const csrfToken = crypto.randomBytes(32).toString('base64url');
+  const expiresAt = Number.isFinite(config.sessionMaxAgeMs)
+    ? now() + config.sessionMaxAgeMs
+    : Number.MAX_SAFE_INTEGER;
+  db.prepare('INSERT INTO sessions (token_hash, user_id, csrf_token, expires_at, created_at) VALUES (?, ?, ?, ?, ?)')
+    .run(tokenDigest(token), user.id, csrfToken, expiresAt, now());
+  setSessionCookie(res, token, Number.isFinite(config.sessionMaxAgeMs)
+    ? config.sessionMaxAgeMs / 1000
+    : null);
+  return csrfToken;
+}
+
+function encodeBase32(bytes) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let output = '';
+  let buffer = 0;
+  let bits = 0;
+  for (const byte of bytes) {
+    buffer = (buffer << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      output += alphabet[(buffer >> bits) & 31];
+      buffer &= (1 << bits) - 1;
+    }
+  }
+  if (bits) output += alphabet[(buffer << (5 - bits)) & 31];
+  return output;
+}
+
+function decodeBase32(value) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let buffer = 0;
+  let bits = 0;
+  const bytes = [];
+  for (const character of value) {
+    const digit = alphabet.indexOf(character);
+    if (digit < 0) throw new Error('Invalid stored authenticator secret');
+    buffer = (buffer << 5) | digit;
+    bits += 5;
+    if (bits >= 8) {
+      bits -= 8;
+      bytes.push((buffer >> bits) & 255);
+      buffer &= (1 << bits) - 1;
+    }
+  }
+  return Buffer.from(bytes);
+}
+
+function encryptOtpSecret(secret) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', otpEncryptionKey, iv);
+  const encrypted = Buffer.concat([cipher.update(secret, 'utf8'), cipher.final()]);
+  return `${iv.toString('hex')}.${cipher.getAuthTag().toString('hex')}.${encrypted.toString('hex')}`;
+}
+
+function decryptOtpSecret(value) {
+  const [iv, tag, encrypted] = value.split('.').map((part) => Buffer.from(part, 'hex'));
+  const decipher = crypto.createDecipheriv('aes-256-gcm', otpEncryptionKey, iv);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8');
+}
+
+function totpAt(secret, counter) {
+  const counterBytes = Buffer.alloc(8);
+  counterBytes.writeUInt32BE(Math.floor(counter / 0x100000000), 0);
+  counterBytes.writeUInt32BE(counter >>> 0, 4);
+  const digest = crypto.createHmac('sha1', decodeBase32(secret)).update(counterBytes).digest();
+  const offset = digest[digest.length - 1] & 15;
+  const binary = digest.readUInt32BE(offset) & 0x7fffffff;
+  return String(binary % 1000000).padStart(6, '0');
+}
+
+function matchingOtpCounter(secret, code, lastCounter = null) {
+  if (typeof code !== 'string' || !/^\d{6}$/.test(code)) return null;
+  const currentCounter = Math.floor(now() / 30000);
+  let matched = null;
+  for (let counter = currentCounter - 1; counter <= currentCounter + 1; counter += 1) {
+    if (counter > lastCounter && crypto.timingSafeEqual(Buffer.from(totpAt(secret, counter)), Buffer.from(code))) {
+      matched = counter;
+    }
+  }
+  return matched;
+}
+
+function consumeOtp(userId, secret, code) {
+  const user = db.prepare('SELECT otp_last_counter FROM users WHERE id=?').get(userId);
+  const counter = matchingOtpCounter(secret, code, user.otp_last_counter);
+  if (counter === null) return false;
+  return db.prepare(`UPDATE users SET otp_last_counter=?
+    WHERE id=? AND (otp_last_counter IS NULL OR otp_last_counter < ?)`)
+    .run(counter, userId, counter).changes === 1;
+}
 
 function authenticate(req, res, next) {
   const token = getCookie(req, 'session');
@@ -140,6 +260,12 @@ function recordLoginAttempt(key) {
   }
   current.count += 1;
   return current.count > 10;
+}
+
+function recordOtpActionAttempt(userId) {
+  const key = `otp-action:${userId}`;
+  if (recordLoginAttempt(key)) throw error(429, 'Too many authenticator attempts. Try again later.');
+  return key;
 }
 
 function verifyOwnership(table, objectId, userId) {
@@ -311,27 +437,124 @@ app.post('/api/auth/login', async (req, res, next) => {
       throw error(401, 'Invalid username or password');
     }
     loginAttempts.delete(attemptKey);
-    const previousToken = getCookie(req, 'session');
-    if (previousToken && previousToken.length <= 256) {
-      db.prepare('DELETE FROM sessions WHERE token_hash=?').run(tokenDigest(previousToken));
+    if (user.otp_secret) {
+      db.prepare('DELETE FROM login_challenges WHERE user_id=? OR expires_at<=?').run(user.id, now());
+      const challengeToken = crypto.randomBytes(32).toString('base64url');
+      db.prepare('INSERT INTO login_challenges (token_hash, user_id, expires_at) VALUES (?, ?, ?)')
+        .run(tokenDigest(challengeToken), user.id, now() + 5 * 60 * 1000);
+      audit(user.id, 'login_otp_required');
+      res.json({ requiresOtp: true, challengeToken });
+      return;
     }
-    const token = crypto.randomBytes(32).toString('base64url');
-    const csrfToken = crypto.randomBytes(32).toString('base64url');
-    const expiresAt = Number.isFinite(config.sessionMaxAgeMs)
-      ? now() + config.sessionMaxAgeMs
-      : Number.MAX_SAFE_INTEGER;
-    db.prepare('INSERT INTO sessions (token_hash, user_id, csrf_token, expires_at, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(tokenDigest(token), user.id, csrfToken, expiresAt, now());
-    setSessionCookie(res, token, Number.isFinite(config.sessionMaxAgeMs)
-      ? config.sessionMaxAgeMs / 1000
-      : null);
+    const csrfToken = createSession(req, res, user);
     audit(user.id, 'login_succeeded');
     res.json({ username: user.username, csrfToken });
   } catch (err) { next(err); }
 });
 
+app.post('/api/auth/login/otp', (req, res, next) => {
+  try {
+    const challengeToken = req.body?.challengeToken;
+    const code = req.body?.code;
+    if (typeof challengeToken !== 'string' || challengeToken.length > 128) {
+      throw error(401, 'Invalid or expired sign-in challenge');
+    }
+    const challenge = db.prepare(`SELECT c.token_hash, c.user_id, c.expires_at, c.attempts,
+      u.username, u.otp_secret, u.otp_last_counter
+      FROM login_challenges c JOIN users u ON u.id=c.user_id WHERE c.token_hash=?`)
+      .get(tokenDigest(challengeToken));
+    if (!challenge || challenge.expires_at <= now() || challenge.attempts >= 5
+      || !challenge.otp_secret || !isWhitelisted(challenge.username)) {
+      if (challenge) db.prepare('DELETE FROM login_challenges WHERE token_hash=?').run(challenge.token_hash);
+      throw error(401, 'Invalid or expired sign-in challenge');
+    }
+    const attemptKey = `login-otp:${req.ip}:${challenge.user_id}`;
+    if (recordLoginAttempt(attemptKey)) throw error(429, 'Too many sign-in attempts. Try again later.');
+    if (!consumeOtp(challenge.user_id, decryptOtpSecret(challenge.otp_secret), code)) {
+      const updated = db.prepare('UPDATE login_challenges SET attempts=attempts+1 WHERE token_hash=?')
+        .run(challenge.token_hash);
+      if (updated.changes && challenge.attempts + 1 >= 5) {
+        db.prepare('DELETE FROM login_challenges WHERE token_hash=?').run(challenge.token_hash);
+      }
+      audit(challenge.user_id, 'login_otp_failed');
+      throw error(401, 'Invalid authenticator code');
+    }
+    db.prepare('DELETE FROM login_challenges WHERE token_hash=?').run(challenge.token_hash);
+    loginAttempts.delete(attemptKey);
+    const csrfToken = createSession(req, res, { id: challenge.user_id });
+    audit(challenge.user_id, 'login_succeeded');
+    res.json({ username: challenge.username, csrfToken });
+  } catch (err) { next(err); }
+});
+
 app.get('/api/auth/me', authenticate, (req, res) => {
   res.json({ username: req.user.username, csrfToken: req.session.csrf_token });
+});
+
+app.get('/api/auth/otp', requireAuth, (req, res) => {
+  const user = db.prepare('SELECT otp_secret FROM users WHERE id=?').get(req.user.id);
+  res.json({ enabled: Boolean(user.otp_secret) });
+});
+
+app.post('/api/auth/otp/setup', requireAuth, async (req, res, next) => {
+  try {
+    const user = db.prepare('SELECT username, otp_secret FROM users WHERE id=?').get(req.user.id);
+    let otpAttemptKey;
+    if (user.otp_secret) {
+      otpAttemptKey = recordOtpActionAttempt(req.user.id);
+      if (!consumeOtp(req.user.id, decryptOtpSecret(user.otp_secret), req.body?.code)) {
+        audit(req.user.id, 'otp_rotation_failed');
+        throw error(401, 'Enter a valid authenticator code to rotate your secret');
+      }
+      loginAttempts.delete(otpAttemptKey);
+    }
+    const secret = encodeBase32(crypto.randomBytes(20));
+    db.prepare('UPDATE users SET otp_pending_secret=? WHERE id=?')
+      .run(encryptOtpSecret(secret), req.user.id);
+    const issuer = 'Simple File Store';
+    const label = `${issuer}:${user.username}`;
+    const uri = `otpauth://totp/${encodeURIComponent(label)}?secret=${secret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=30`;
+    const qrCode = await QRCode.toDataURL(uri, { errorCorrectionLevel: 'M', margin: 2, width: 220 });
+    audit(req.user.id, user.otp_secret ? 'otp_rotation_started' : 'otp_setup_started');
+    res.json({ secret, qrCode });
+  } catch (err) { next(err); }
+});
+
+app.post('/api/auth/otp/confirm', requireAuth, (req, res, next) => {
+  try {
+    const user = db.prepare('SELECT otp_pending_secret FROM users WHERE id=?').get(req.user.id);
+    if (!user.otp_pending_secret) throw error(400, 'Start authenticator setup before confirming');
+    const otpAttemptKey = recordOtpActionAttempt(req.user.id);
+    const pendingSecret = decryptOtpSecret(user.otp_pending_secret);
+    const counter = matchingOtpCounter(pendingSecret, req.body?.code);
+    if (counter === null) {
+      audit(req.user.id, 'otp_setup_failed');
+      throw error(401, 'Invalid authenticator code');
+    }
+    loginAttempts.delete(otpAttemptKey);
+    db.prepare(`UPDATE users SET otp_secret=otp_pending_secret, otp_pending_secret=NULL,
+      otp_last_counter=? WHERE id=?`).run(counter, req.user.id);
+    audit(req.user.id, 'otp_enabled');
+    res.json({ enabled: true });
+  } catch (err) { next(err); }
+});
+
+app.post('/api/auth/otp/disable', requireAuth, (req, res, next) => {
+  try {
+    const user = db.prepare('SELECT otp_secret FROM users WHERE id=?').get(req.user.id);
+    if (!user.otp_secret) throw error(400, 'Authenticator verification is not enabled');
+    const otpAttemptKey = recordOtpActionAttempt(req.user.id);
+    if (!consumeOtp(req.user.id, decryptOtpSecret(user.otp_secret), req.body?.code)) {
+      audit(req.user.id, 'otp_disable_failed');
+      throw error(401, 'Enter a valid authenticator code to turn off verification');
+    }
+    loginAttempts.delete(otpAttemptKey);
+    db.prepare(`UPDATE users SET otp_secret=NULL, otp_pending_secret=NULL, otp_last_counter=NULL
+      WHERE id=?`).run(req.user.id);
+    db.prepare('DELETE FROM login_challenges WHERE user_id=?').run(req.user.id);
+    audit(req.user.id, 'otp_disabled');
+    res.json({ enabled: false });
+  } catch (err) { next(err); }
 });
 
 app.post('/api/auth/logout', requireAuth, (req, res) => {
@@ -1214,6 +1437,7 @@ const queueTimer = setInterval(() => { void scanQueueTick(); }, 1000);
 queueTimer.unref();
 const sessionCleanup = setInterval(() => {
   db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(now());
+  db.prepare('DELETE FROM login_challenges WHERE expires_at<=?').run(now());
   db.prepare('DELETE FROM audit_log WHERE created_at < ?').run(now() - 90 * 86400000);
   if (Number.isFinite(config.quarantineRetentionMs)) {
     const cutoff = now() - config.quarantineRetentionMs;

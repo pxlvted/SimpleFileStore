@@ -171,6 +171,21 @@ h1, h2 { margin: 0; font-family: inherit; letter-spacing: -.3px; }
 .delete-account-modal input { width: 100%; height: 43px; margin-bottom: 22px; border: 1px solid var(--line); border-radius: 8px; padding: 0 10px; outline: 0; color: var(--text); background: var(--bg); }
 .delete-account-modal input:focus { border-color: var(--accent); }
 .delete-account-modal footer { display: flex; justify-content: flex-end; gap: 9px; }
+.settings-modal { width: min(520px, 100%); max-height: min(760px, 92vh); overflow-y: auto; padding: 23px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow); }
+.settings-modal header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.settings-modal h2 { font-size: 20px; }
+.settings-modal h3 { margin: 22px 0 7px; font-size: 15px; }
+.settings-modal p { line-height: 1.5; }
+.settings-modal label, .otp-secret-label { display: block; margin: 17px 0 7px; font-size: 12px; font-weight: 600; }
+.settings-modal input { width: 100%; height: 42px; border: 1px solid var(--line); border-radius: 7px; padding: 0 10px; outline: 0; color: var(--text); background: var(--bg); }
+.settings-modal input:focus { border-color: var(--accent); }
+.otp-action-row { display: flex; gap: 8px; }
+.otp-action-row input { min-width: 0; }
+#otp-enrollment { display: flex; flex-direction: column; align-items: flex-start; }
+#otp-enrollment > p:first-child { margin: 14px 0; }
+#otp-qr { width: 220px; height: 220px; align-self: center; image-rendering: pixelated; }
+#otp-secret { display: block; max-width: 100%; overflow-wrap: anywhere; border: 1px solid var(--line); border-radius: 6px; padding: 10px; color: var(--text); background: var(--bg); font-size: 12px; user-select: all; }
+.otp-enrollment-actions { display: flex; justify-content: flex-end; gap: 8px; width: 100%; margin-top: 18px; }
 .share-modal { width: min(540px, 100%); max-height: min(780px, 92vh); overflow-y: auto; padding: 23px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow); }
 .share-modal header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 22px; }
 .share-modal h2 { font-size: 20px; }
