@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>Simple File Store</title>
-  <link rel="stylesheet" href="/styles.css?v=4">
-  <script src="/app.js?v=4" defer></script>
+  <link rel="stylesheet" href="/styles.css?v=5">
+  <script src="/app.js?v=5" defer></script>
 </head>
 <body>
   <svg class="icon-sprite" width="0" height="0" aria-hidden="true" focusable="false">
@@ -86,7 +86,7 @@
         <div class="topbar-actions">
           <button class="icon-button" id="theme-toggle" aria-label="Switch theme" title="Switch theme"><svg class="icon" width="18" height="18" aria-hidden="true"><use href="#icon-moon"></use></svg></button>
           <button class="profile-button" id="profile-button" type="button"><span class="avatar" id="avatar">U</span><span id="profile-name">User</span><svg class="icon profile-chevron" width="18" height="18" aria-hidden="true"><use href="#icon-chevron-down"></use></svg></button>
-          <div class="profile-menu hidden" id="profile-menu"><button id="logout-button" type="button">Sign out</button></div>
+          <div class="profile-menu hidden" id="profile-menu"><button id="logout-button" type="button">Sign out</button><button id="delete-account-button" class="danger-action" type="button">Delete account</button></div>
         </div>
       </header>
       <section class="content">
@@ -142,6 +142,17 @@
       </fieldset>
       <div class="existing-shares"><h3>People with access</h3><div id="share-list"></div></div>
       <footer><span id="share-owner-note" class="muted">Shared files remain owned by you and count toward your storage.</span><button class="button secondary" id="share-cancel">Done</button><button class="button primary" id="share-save" disabled>Save access</button></footer>
+    </section>
+  </div>
+  <div id="delete-account-dialog" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="delete-account-title">
+    <section class="delete-account-modal">
+      <header><h2 id="delete-account-title">Delete your account?</h2><button class="icon-button" id="delete-account-close" type="button" aria-label="Close dialog">×</button></header>
+      <p class="muted">This permanently deletes your account, files, shares, and related data. This cannot be undone.</p>
+      <form id="delete-account-form">
+        <label for="delete-account-password">Password</label>
+        <input id="delete-account-password" name="password" type="password" autocomplete="current-password" required maxlength="1024">
+        <footer><button class="button secondary" id="delete-account-cancel" type="button">Cancel</button><button class="button danger" id="delete-account-confirm" type="submit">Confirm deletion</button></footer>
+      </form>
     </section>
   </div>
   <div id="toast-region" class="toast-region" aria-live="polite"></div>

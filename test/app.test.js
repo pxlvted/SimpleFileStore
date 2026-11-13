@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { Worker } from 'node:worker_threads';
 import crypto from 'node:crypto';
+import Database from 'better-sqlite3';
 import fs from 'node:fs/promises';
 import zlib from 'node:zlib';
 import net from 'node:net';
@@ -564,6 +565,35 @@ test('authentication, isolated storage, scanning, editing, and quarantine', { ti
   overQuotaForm.append('file', new Blob([Buffer.alloc(400 * 1024, 67)]), 'over-quota.txt');
   const overQuota = await request('/api/upload', { method: 'POST', body: overQuotaForm }, alice);
   assert.equal(overQuota.status, 507);
+
+  const database = new Database(path.join(dataDirectory, 'database.sqlite'), { readonly: true });
+  const aliceId = database.prepare('SELECT id FROM users WHERE username=?').get('alice').id;
+  database.close();
+  const incorrectPassword = await request('/api/auth/delete', {
+    method: 'POST',
+    body: JSON.stringify({ password: 'incorrect password' })
+  }, alice);
+  assert.equal(incorrectPassword.status, 401);
+  assert.equal((await request('/api/auth/me', {}, alice)).status, 200);
+
+  const deleteAccount = await request('/api/auth/delete', {
+    method: 'POST',
+    body: JSON.stringify({ password: 'correct horse battery staple' })
+  }, alice);
+  assert.equal(deleteAccount.status, 200);
+  assert.match(deleteAccount.headers.get('set-cookie'), /Max-Age=0/);
+  assert.equal((await request('/api/auth/me', {}, alice)).status, 401);
+  assert.equal((await request('/api/auth/me', {}, bob)).status, 200);
+  await assert.rejects(fs.access(path.join(dataDirectory, 'storage', aliceId)));
+
+  const deletedData = new Database(path.join(dataDirectory, 'database.sqlite'), { readonly: true });
+  assert.equal(deletedData.prepare('SELECT COUNT(*) AS count FROM users WHERE id=?').get(aliceId).count, 0);
+  for (const table of ['sessions', 'files', 'folders', 'scan_jobs', 'quarantine_records']) {
+    assert.equal(deletedData.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE user_id=?`).get(aliceId).count, 0);
+  }
+  assert.equal(deletedData.prepare('SELECT COUNT(*) AS count FROM shares WHERE owner_id=? OR recipient_id=?').get(aliceId, aliceId).count, 0);
+  assert.equal(deletedData.prepare('SELECT COUNT(*) AS count FROM audit_log WHERE user_id=?').get(aliceId).count, 0);
+  deletedData.close();
 });
 
 test('nested archives are rejected when nested inspection is disabled', async () => {

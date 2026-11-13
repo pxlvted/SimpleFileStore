@@ -52,7 +52,8 @@ async function api(url, options = {}) {
   const response = await fetch(url, { credentials: 'same-origin', ...options, headers });
   const payload = response.status === 204 ? null : await response.json().catch(() => ({}));
   if (!response.ok) {
-    if (response.status === 401 && !url.includes('/auth/login')) showAuth();
+    const invalidDeletionPassword = url === '/api/auth/delete' && payload?.error === 'Invalid password';
+    if (response.status === 401 && !url.includes('/auth/login') && !invalidDeletionPassword) showAuth();
     throw new Error(payload?.error || `Request failed (${response.status})`);
   }
   return payload;
@@ -1028,6 +1029,37 @@ $('#logout-button').addEventListener('click', async () => {
   try { await api('/api/auth/logout', { method: 'POST', body: '{}' }); }
   catch (error) { toast(error.message, true); }
   showAuth();
+});
+
+function closeDeleteAccountDialog() {
+  $('#delete-account-dialog').classList.add('hidden');
+  $('#delete-account-password').value = '';
+}
+
+$('#delete-account-button').addEventListener('click', () => {
+  $('#profile-menu').classList.add('hidden');
+  $('#delete-account-dialog').classList.remove('hidden');
+  $('#delete-account-password').focus();
+});
+$('#delete-account-close').addEventListener('click', closeDeleteAccountDialog);
+$('#delete-account-cancel').addEventListener('click', closeDeleteAccountDialog);
+$('#delete-account-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const button = $('#delete-account-confirm');
+  button.disabled = true;
+  try {
+    await api('/api/auth/delete', {
+      method: 'POST',
+      body: JSON.stringify({ password: $('#delete-account-password').value })
+    });
+    closeDeleteAccountDialog();
+    showAuth();
+    toast('Your account has been deleted.');
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
 });
 
 const savedTheme = localStorage.getItem('theme');

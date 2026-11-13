@@ -27,6 +27,8 @@ button { cursor: pointer; color: inherit; }
 .button.primary:hover { background: var(--accent-strong); }
 .button.secondary { color: var(--text); background: var(--surface); border: 1px solid var(--line); }
 .button.secondary:hover { background: var(--surface-2); }
+.button.danger { color: #fff; background: #a33b37; }
+.button.danger:hover { background: #862f2c; }
 .button.full { width: 100%; margin-top: 21px; min-height: 42px; }
 .upload-trigger { display: flex; align-items: center; justify-content: center; gap: 7px; min-height: 42px; margin: 0 0 24px; }
 .upload-trigger .icon { width: 17px; height: 17px; }
@@ -80,6 +82,7 @@ button { cursor: pointer; color: inherit; }
 .profile-menu { position: absolute; top: 48px; right: 0; min-width: 140px; padding: 5px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-shadow: var(--shadow); }
 .profile-menu button { width: 100%; border: 0; border-radius: 6px; padding: 9px; text-align: left; background: transparent; }
 .profile-menu button:hover { background: var(--surface-2); }
+.profile-menu .danger-action { color: var(--red); }
 .content { max-width: 1360px; margin: 0 auto; padding: 34px 5vw 60px; }
 .page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin-bottom: 28px; }
 .eyebrow { margin: 0 0 6px; color: var(--muted); font-size: 11px; font-weight: 550; letter-spacing: 0; }
@@ -160,6 +163,14 @@ h1, h2 { margin: 0; font-family: inherit; letter-spacing: -.3px; }
 .move-modal label { display: block; margin-bottom: 8px; font-size: 12px; font-weight: 600; }
 .move-modal select { width: 100%; height: 44px; margin-bottom: 24px; border: 1px solid var(--line); border-radius: 8px; padding: 0 10px; color: var(--text); background: var(--bg); }
 .move-modal footer { display: flex; justify-content: flex-end; gap: 9px; }
+.delete-account-modal { width: min(440px, 100%); padding: 23px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow); }
+.delete-account-modal header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.delete-account-modal h2 { font-size: 20px; }
+.delete-account-modal > p { margin: 15px 0 22px; line-height: 1.5; }
+.delete-account-modal label { display: block; margin-bottom: 8px; font-size: 12px; font-weight: 600; }
+.delete-account-modal input { width: 100%; height: 43px; margin-bottom: 22px; border: 1px solid var(--line); border-radius: 8px; padding: 0 10px; outline: 0; color: var(--text); background: var(--bg); }
+.delete-account-modal input:focus { border-color: var(--accent); }
+.delete-account-modal footer { display: flex; justify-content: flex-end; gap: 9px; }
 .share-modal { width: min(540px, 100%); max-height: min(780px, 92vh); overflow-y: auto; padding: 23px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow); }
 .share-modal header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 22px; }
 .share-modal h2 { font-size: 20px; }

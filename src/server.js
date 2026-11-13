@@ -47,6 +47,8 @@ const safeName = (value) => typeof value === 'string'
   && value !== '.' && value !== '..';
 const EDITABLE_EXTENSIONS = new Set(['.txt', '.md', '.json', '.html', '.css', '.js', '.xml', '.csv', '.yaml', '.yml', '.log']);
 const loginAttempts = new Map();
+const deletingUsers = new Set();
+const activeScanJobs = new Map();
 let activeUploads = 0;
 let activeUploadReservation = 0;
 let activeScans = 0;
@@ -115,6 +117,9 @@ function csrf(req, res, next) {
 function requireAuth(req, res, next) {
   authenticate(req, res, (authError) => {
     if (authError) return next(authError);
+    if (deletingUsers.has(req.user.id)) {
+      return next(error(409, 'Account deletion is in progress'));
+    }
     csrf(req, res, next);
   });
 }
@@ -334,6 +339,55 @@ app.post('/api/auth/logout', requireAuth, (req, res) => {
   audit(req.user.id, 'logout');
   clearSessionCookie(res);
   res.json({ success: true });
+});
+
+app.post('/api/auth/delete', requireAuth, async (req, res, next) => {
+  const userId = req.user.id;
+  if (deletingUsers.has(userId)) return next(error(409, 'Account deletion is in progress'));
+  deletingUsers.add(userId);
+  try {
+    const password = req.body?.password;
+    if (typeof password !== 'string' || password.length < 1 || password.length > 1024) {
+      throw error(400, 'Enter your password to delete your account');
+    }
+    const attemptKey = `account-delete:${req.ip}:${userId}`;
+    if (recordLoginAttempt(attemptKey)) throw error(429, 'Too many attempts. Try again later.');
+    const user = db.prepare('SELECT password_hash, password_salt FROM users WHERE id=?').get(userId);
+    const actual = await passwordHash(password, Buffer.from(user.password_salt, 'hex'));
+    const expected = Buffer.from(user.password_hash, 'hex');
+    if (!crypto.timingSafeEqual(actual, expected)) {
+      audit(userId, 'account_deletion_failed');
+      throw error(401, 'Invalid password');
+    }
+    loginAttempts.delete(attemptKey);
+
+    await Promise.all([...(activeScanJobs.get(userId) || [])]);
+    const scanJobs = db.prepare('SELECT staging_key FROM scan_jobs WHERE user_id=?').all(userId);
+    const quarantineRecords = db.prepare('SELECT storage_key FROM quarantine_records WHERE user_id=?').all(userId);
+    await Promise.all([
+      fs.promises.rm(path.join(config.storageDirectory, userId), { recursive: true, force: true }),
+      ...scanJobs.map((job) => fs.promises.rm(path.join(config.stagingDirectory, job.staging_key), { force: true })),
+      ...quarantineRecords.map((record) => fs.promises.rm(path.join(config.quarantineDirectory, record.storage_key), { force: true }))
+    ]);
+
+    db.transaction(() => {
+      db.prepare('DELETE FROM scan_jobs WHERE user_id=?').run(userId);
+      db.prepare('DELETE FROM quarantine_records WHERE user_id=?').run(userId);
+      db.prepare('DELETE FROM files WHERE user_id=?').run(userId);
+      db.prepare('UPDATE folders SET parent_id=NULL WHERE user_id=?').run(userId);
+      db.prepare('DELETE FROM folders WHERE user_id=?').run(userId);
+      db.prepare('DELETE FROM shares WHERE owner_id=? OR recipient_id=?').run(userId, userId);
+      db.prepare('DELETE FROM sessions WHERE user_id=?').run(userId);
+      db.prepare('DELETE FROM audit_log WHERE user_id=?').run(userId);
+      db.prepare('DELETE FROM users WHERE id=?').run(userId);
+    })();
+    clearSessionCookie(res);
+    res.json({ success: true });
+  } catch (err) {
+    next(err);
+  } finally {
+    deletingUsers.delete(userId);
+  }
 });
 
 app.get('/api/storage', requireAuth, (req, res) => {
@@ -780,14 +834,19 @@ async function processScan(job) {
 
 async function scanQueueTick() {
   while (activeScans < config.scanConcurrency) {
-    const job = db.prepare(`SELECT * FROM scan_jobs WHERE state='queued' ORDER BY created_at LIMIT 1`).get();
+    const deletingIds = [...deletingUsers];
+    const deletionFilter = deletingIds.length
+      ? `AND user_id NOT IN (${deletingIds.map(() => '?').join(',')})`
+      : '';
+    const job = db.prepare(`SELECT * FROM scan_jobs WHERE state='queued' ${deletionFilter} ORDER BY created_at LIMIT 1`)
+      .get(...deletingIds);
     if (!job) return;
     const changed = db.prepare(`UPDATE scan_jobs SET state='scanning', updated_at=? WHERE id=? AND state='queued'`)
       .run(now(), job.id).changes;
     if (!changed) continue;
     db.prepare(`UPDATE files SET status='SCANNING' WHERE id=? AND status='PENDING_SCAN'`).run(job.file_id);
     activeScans += 1;
-    processScan(job).catch((scanError) => {
+    const scanPromise = processScan(job).catch((scanError) => {
       const file = db.prepare('SELECT storage_key, size FROM files WHERE id=?').get(job.file_id);
       if (job.is_edit && file?.storage_key) {
         db.prepare('UPDATE files SET status=?, size=?, detection=NULL WHERE id=?')
@@ -802,8 +861,13 @@ async function scanQueueTick() {
       audit(job.user_id, 'scan_error', scanError.message);
     }).finally(() => {
       activeScans -= 1;
+      const userJobs = activeScanJobs.get(job.user_id);
+      userJobs?.delete(scanPromise);
+      if (userJobs?.size === 0) activeScanJobs.delete(job.user_id);
       void scanQueueTick();
     });
+    if (!activeScanJobs.has(job.user_id)) activeScanJobs.set(job.user_id, new Set());
+    activeScanJobs.get(job.user_id).add(scanPromise);
   }
 }
 
