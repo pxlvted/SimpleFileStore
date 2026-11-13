@@ -80,6 +80,22 @@ function makeTar(name, content) {
   return Buffer.concat([header, data, Buffer.alloc((512 - (data.length % 512)) % 512), Buffer.alloc(1024)]);
 }
 
+function makeCpio(name, content) {
+  function record(fileName, data, mode) {
+    const fileNameBytes = Buffer.from(`${fileName}\0`);
+    const fileData = Buffer.from(data);
+    const fields = [1, mode, 0, 0, 1, 0, fileData.length, 0, 0, 0, 0, fileNameBytes.length, 0];
+    const header = Buffer.from(`070701${fields.map((value) => value.toString(16).padStart(8, '0')).join('')}`);
+    const namePadding = Buffer.alloc((4 - ((110 + fileNameBytes.length) % 4)) % 4);
+    const dataPadding = Buffer.alloc((4 - (fileData.length % 4)) % 4);
+    return Buffer.concat([header, fileNameBytes, namePadding, fileData, dataPadding]);
+  }
+
+  const trailer = record('TRAILER!!!', Buffer.alloc(0), 0);
+  const archive = Buffer.concat([record(name, content, 0o100644), trailer]);
+  return Buffer.concat([archive, Buffer.alloc((512 - (archive.length % 512)) % 512)]);
+}
+
 function makeIso(name, content) {
   const data = Buffer.from(content);
   const image = Buffer.alloc(22 * 2048);
@@ -558,6 +574,25 @@ test('nested archives are rejected when nested inspection is disabled', async ()
     const result = await scanFile(archivePath, 'nested.zip', false);
     assert.equal(result.status, 'UNSCANNABLE');
     assert.match(result.reason, /Nested archives are not supported/);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('gzip-compressed CPIO files inside ISO images are inspected', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'simple-file-store-cpio-'));
+  const safePath = path.join(directory, 'safe.iso');
+  const infectedPath = path.join(directory, 'infected.iso');
+  const eicar = Buffer.from('X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*');
+  try {
+    await fs.writeFile(safePath, makeIso('CORE.GZ', zlib.gzipSync(makeCpio('etc/config', 'safe initramfs'))));
+    const safeResult = await scanFile(safePath, 'safe.iso', true);
+    assert.equal(safeResult.status, 'SCAN_PASSED');
+
+    await fs.writeFile(infectedPath, makeIso('CORE.GZ', zlib.gzipSync(makeCpio('tmp/eicar.txt', eicar))));
+    const infectedResult = await scanFile(infectedPath, 'infected.iso', true);
+    assert.equal(infectedResult.status, 'INFECTED');
+    assert.match(infectedResult.reason, /EICAR/);
   } finally {
     await fs.rm(directory, { recursive: true, force: true });
   }

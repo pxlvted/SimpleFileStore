@@ -56,12 +56,12 @@ function inspectChunkedStream(stream) {
 }
 
 function archiveTypeIsNested(prefix) {
-  return ['zip', '7z', 'rar', 'gzip', 'bzip2', 'xz', 'tar', 'iso', 'cab', 'zstd', 'lz4']
+  return ['zip', '7z', 'rar', 'gzip', 'bzip2', 'xz', 'tar', 'cpio', 'iso', 'cab', 'zstd', 'lz4']
     .includes(detectType(prefix));
 }
 
 function nestedArchiveTypeIsSupported(type) {
-  return ['zip', 'gzip', 'tar', 'iso'].includes(type);
+  return ['zip', 'gzip', 'tar', 'cpio', 'iso'].includes(type);
 }
 
 class ArchiveEntryInspector {
@@ -262,6 +262,23 @@ class StreamReader {
     return chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, length);
   }
 
+  async peek(length) {
+    const chunk = await this.readChunk(length);
+    if (chunk) {
+      this.buffer = Buffer.concat([chunk, this.buffer.subarray(this.bufferOffset)]);
+      this.bufferOffset = 0;
+    }
+    return chunk;
+  }
+
+  async *[Symbol.asyncIterator]() {
+    while (true) {
+      const chunk = await this.readChunk(64 * 1024);
+      if (!chunk) return;
+      yield chunk;
+    }
+  }
+
   async readExact(length) {
     const chunks = [];
     let remaining = length;
@@ -424,6 +441,94 @@ async function inspectTar(stream, compressedSize = null, depth = 0) {
     && (compressedSize === 0 || totalSize / compressedSize > limits.maxArchiveRatio)) {
     throw new Error('Archive compression ratio limit exceeded');
   }
+}
+
+function parseCpioNumber(field) {
+  const value = field.toString('ascii');
+  if (!/^[\da-f]{8}$/i.test(value)) throw new Error('Invalid CPIO numeric field');
+  const number = Number.parseInt(value, 16);
+  if (!Number.isSafeInteger(number)) throw new Error('Invalid CPIO numeric field');
+  return number;
+}
+
+async function inspectCpio(stream, compressedSize = null, depth = 0) {
+  const maxArchiveBytes = limits.maxArchiveUncompressed + limits.maxArchiveEntries * 1024 + 1024;
+  const reader = new StreamReader(stream, maxArchiveBytes);
+  let entries = 0;
+  let totalSize = 0;
+  let sawTrailer = false;
+  while (true) {
+    const header = await reader.readChunk(110);
+    if (!header) break;
+    if (header.length !== 110) throw new Error('Truncated CPIO header');
+    if (header.every((byte) => byte === 0)) {
+      await reader.drainZeroPadding();
+      break;
+    }
+    const magic = header.toString('ascii', 0, 6);
+    if (magic !== '070701' && magic !== '070702') throw new Error('Invalid CPIO archive');
+    entries += 1;
+    if (entries > limits.maxArchiveEntries) throw new Error('Archive entry count limit exceeded');
+
+    const fields = Array.from({ length: 13 }, (_, index) =>
+      parseCpioNumber(header.subarray(6 + index * 8, 14 + index * 8)));
+    const mode = fields[1];
+    const size = fields[6];
+    const nameSize = fields[11];
+    const expectedChecksum = fields[12];
+    if (nameSize < 1 || nameSize > Math.min(limits.maxArchiveEntry, 1024 * 1024)) {
+      throw new Error('Invalid CPIO filename size');
+    }
+    const nameBytes = await reader.readExact(nameSize);
+    if (nameBytes[nameBytes.length - 1] !== 0) throw new Error('Invalid CPIO filename');
+    const rawName = nameBytes.subarray(0, -1).toString('utf8');
+    await reader.readExact((4 - ((110 + nameSize) % 4)) % 4);
+    if (rawName === 'TRAILER!!!') {
+      if (size !== 0) throw new Error('Invalid CPIO trailer');
+      sawTrailer = true;
+      continue;
+    }
+
+    let fileName = rawName;
+    while (fileName.startsWith('./')) fileName = fileName.slice(2);
+    const isDirectory = (mode & 0o170000) === 0o040000;
+    if ((!fileName && !isDirectory) || (fileName && isUnsafeArchivePath(fileName))) {
+      throw new Error(`Unsafe archive path: ${rawName}`);
+    }
+    if (size > limits.maxArchiveEntry) throw new Error('Archive entry size limit exceeded');
+    totalSize += size;
+    if (totalSize > limits.maxArchiveUncompressed) throw new Error('Archive expansion size limit exceeded');
+    if (compressedSize !== null && totalSize > 0
+      && (compressedSize === 0 || totalSize / compressedSize > limits.maxArchiveRatio)) {
+      throw new Error('Archive compression ratio limit exceeded');
+    }
+
+    const isRegularFile = (mode & 0o170000) === 0o100000;
+    const inspector = isRegularFile ? new ArchiveEntryInspector(fileName) : null;
+    const rawEntryState = { tail: Buffer.alloc(0), prefix: Buffer.alloc(0) };
+    let checksum = 0;
+    try {
+      await reader.consume(size, async (chunk) => {
+        if (magic === '070702') {
+          for (const byte of chunk) checksum = (checksum + byte) >>> 0;
+        }
+        if (inspector) await inspector.consume(chunk);
+        else inspectChunk(chunk, rawEntryState);
+      });
+      if (inspector) {
+        const nestedEntry = await inspector.finish();
+        await inspectNestedEntry(nestedEntry, depth);
+      }
+    } catch (error) {
+      if (inspector) await inspector.abort();
+      throw error;
+    }
+    if (magic === '070702' && checksum !== expectedChecksum) {
+      throw new Error('Invalid CPIO file checksum');
+    }
+    await reader.readExact((4 - (size % 4)) % 4);
+  }
+  if (!sawTrailer) throw new Error('Invalid CPIO archive');
 }
 
 async function readAt(handle, position, length) {
@@ -600,6 +705,7 @@ function detectType(prefix) {
   if (prefix.length >= maxPrefixSize && [1, 2].includes(prefix[32768])
     && prefix.subarray(32769, 32774).toString('ascii') === 'CD001') return 'iso';
   if (prefix.length >= 262 && prefix.subarray(257, 262).toString('ascii') === 'ustar') return 'tar';
+  if (['070701', '070702'].includes(prefix.subarray(0, 6).toString('ascii'))) return 'cpio';
   return 'unknown';
 }
 
@@ -610,11 +716,21 @@ async function inspectNestedArchive(filePath, type, depth) {
     await inspectZip(filePath, depth);
   } else if (type === 'tar') {
     await inspectTar(fs.createReadStream(filePath), null, depth);
+  } else if (type === 'cpio') {
+    await inspectCpio(fs.createReadStream(filePath), null, depth);
   } else if (type === 'iso') {
     await inspectIso(filePath, stat.size, depth);
   } else if (type === 'gzip') {
     const archiveStream = fs.createReadStream(filePath);
-    await inspectTar(archiveStream.pipe(zlib.createGunzip()), stat.size, depth);
+    const decompressed = archiveStream.pipe(zlib.createGunzip());
+    const reader = new StreamReader(decompressed, limits.maxArchiveUncompressed
+      + limits.maxArchiveEntries * 1024 + 1024);
+    const prefix = await reader.peek(6);
+    if (prefix?.toString('ascii', 0, 6) === '070701' || prefix?.toString('ascii', 0, 6) === '070702') {
+      await inspectCpio(reader, stat.size, depth);
+    } else {
+      await inspectTar(reader, stat.size, depth);
+    }
   } else {
     throw new Error('Nested archives are not supported for safe inspection');
   }
@@ -679,6 +795,13 @@ async function scanFile(stat) {
       await inspectTar(isTarGzip ? archiveStream.pipe(zlib.createGunzip()) : archiveStream, isTarGzip ? stat.size : null);
     } catch (error) {
       return { status: 'UNSCANNABLE', reason: error.message || 'TAR archive could not be inspected' };
+    }
+  } else if (type === 'cpio' || extension === '.cpio') {
+    if (type !== 'cpio') return { status: 'UNSCANNABLE', reason: 'CPIO extension does not contain a supported CPIO archive' };
+    try {
+      await inspectCpio(fs.createReadStream(workerData.filePath));
+    } catch (error) {
+      return { status: 'UNSCANNABLE', reason: error.message || 'CPIO archive could not be inspected' };
     }
   } else if (['7z', 'rar', 'gzip', 'bzip2', 'xz', 'tar', 'cab', 'zstd', 'lz4'].includes(type)
     || ['.7z', '.rar', '.gz', '.tgz', '.bz2', '.xz', '.cab', '.arj', '.ace', '.zst', '.lz4', '.lzh', '.deb']
