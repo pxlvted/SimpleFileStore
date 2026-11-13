@@ -1092,6 +1092,11 @@ $('#logout-button').addEventListener('click', async () => {
 
 const settingsCategories = [
   {
+    id: 'account',
+    label: 'Password',
+    render: renderAccountSettings
+  },
+  {
     id: 'security',
     label: 'Security',
     render: renderSecuritySettings
@@ -1223,6 +1228,73 @@ async function renderSecuritySettings(container) {
   });
 }
 
+  async function renderAccountSettings(container) {
+    const section = document.createElement('section');
+    section.innerHTML = `
+      <h3>Change password</h3>
+      <p class="muted">Enter your current password and a new password to update your account credentials.</p>
+      <form id="password-change-form">
+        <label for="current-password">Current password</label>
+        <input id="current-password" type="password" autocomplete="current-password" required maxlength="1024">
+        <label for="new-password">New password</label>
+        <input id="new-password" type="password" autocomplete="new-password" required minlength="8" maxlength="1024">
+        <label for="confirm-new-password">Confirm new password</label>
+        <input id="confirm-new-password" type="password" autocomplete="new-password" required minlength="8" maxlength="1024">
+        <div id="otp-code-field" class="hidden">
+          <label for="password-change-otp-code">Authenticator code</label>
+          <input id="password-change-otp-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6">
+        </div>
+        <button class="button primary" type="submit">Change password</button>
+      </form>
+    `;
+    container.append(section);
+
+    const form = section.querySelector('#password-change-form');
+    const otpField = section.querySelector('#otp-code-field');
+    const otpInput = section.querySelector('#password-change-otp-code');
+
+    const checkOtpRequired = async () => {
+      try {
+        const result = await api('/api/auth/otp');
+        otpField.classList.toggle('hidden', !result.enabled);
+        if (!result.enabled) otpInput.value = '';
+      } catch {
+        otpField.classList.add('hidden');
+      }
+    };
+
+    await checkOtpRequired();
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const currentPassword = section.querySelector('#current-password').value;
+      const newPassword = section.querySelector('#new-password').value;
+      const confirmPassword = section.querySelector('#confirm-new-password').value;
+      const otpCode = otpInput.value;
+
+      if (newPassword !== confirmPassword) {
+        toast('New passwords do not match', true);
+        return;
+      }
+
+      const button = form.querySelector('button[type="submit"]');
+      button.disabled = true;
+      try {
+        await api('/api/auth/password', {
+          method: 'POST',
+          body: JSON.stringify({ currentPassword, newPassword, code: otpCode || undefined })
+        });
+        form.reset();
+        await checkOtpRequired();
+        toast('Password changed successfully. Other sessions have been logged out.');
+      } catch (error) {
+        toast(error.message, true);
+      } finally {
+        button.disabled = false;
+      }
+    });
+  }
+
 function clearOtpEnrollment() {
   $('#otp-enrollment').classList.add('hidden');
   $('#otp-qr').removeAttribute('src');
@@ -1258,7 +1330,7 @@ $('#settings-button').addEventListener('click', async () => {
   clearOtpEnrollment();
   $('#settings-dialog').classList.remove('hidden');
   renderSettingsNav();
-  switchSettingsCategory('security');
+  switchSettingsCategory('account');
 });
 $('#settings-close').addEventListener('click', () => {
   clearOtpEnrollment();

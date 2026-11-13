@@ -504,6 +504,53 @@ app.get('/api/auth/me', authenticate, (req, res) => {
   res.json({ username: req.user.username, csrfToken: req.session.csrf_token });
 });
 
+app.post('/api/auth/password', requireAuth, async (req, res, next) => {
+  try {
+    const currentPassword = req.body?.currentPassword;
+    const newPassword = req.body?.newPassword;
+    const otpCode = req.body?.code;
+
+    if (typeof currentPassword !== 'string' || currentPassword.length < 1 || currentPassword.length > 1024) {
+      throw error(400, 'Enter your current password');
+    }
+    if (typeof newPassword !== 'string' || newPassword.length < 8 || newPassword.length > 1024) {
+      throw error(400, 'New password must be at least 8 characters');
+    }
+
+    const attemptKey = `password-change:${req.ip}:${req.user.id}`;
+    if (recordLoginAttempt(attemptKey)) throw error(429, 'Too many attempts. Try again later.');
+
+    const user = db.prepare('SELECT password_hash, password_salt, otp_secret FROM users WHERE id=?').get(req.user.id);
+    const actual = await passwordHash(currentPassword, Buffer.from(user.password_salt, 'hex'));
+    const expected = Buffer.from(user.password_hash, 'hex');
+    if (!crypto.timingSafeEqual(actual, expected)) {
+      audit(req.user.id, 'password_change_failed');
+      throw error(401, 'Current password is incorrect');
+    }
+
+    if (user.otp_secret) {
+      const otpAttemptKey = recordOtpActionAttempt(req.user.id);
+      if (!consumeOtp(req.user.id, decryptOtpSecret(user.otp_secret), otpCode)) {
+        audit(req.user.id, 'password_change_otp_failed');
+        throw error(401, 'Enter a valid authenticator code to change your password');
+      }
+      loginAttempts.delete(otpAttemptKey);
+    }
+
+    const newSalt = crypto.randomBytes(16);
+    const newHash = await passwordHash(newPassword, newSalt);
+    db.prepare('UPDATE users SET password_hash=?, password_salt=? WHERE id=?')
+      .run(newHash.toString('hex'), newSalt.toString('hex'), req.user.id);
+
+    db.prepare('DELETE FROM sessions WHERE user_id=? AND token_hash!=?')
+      .run(req.user.id, req.session.token_hash);
+
+    loginAttempts.delete(attemptKey);
+    audit(req.user.id, 'password_changed');
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
 app.get('/api/auth/otp', requireAuth, (req, res) => {
   const user = db.prepare(`SELECT otp_secret, trash_delete_otp_required
     FROM users WHERE id=?`).get(req.user.id);
