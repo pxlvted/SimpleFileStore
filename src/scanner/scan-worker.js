@@ -55,6 +55,12 @@ function inspectChunkedStream(stream) {
   });
 }
 
+async function inspectReaderContents(reader) {
+  const state = { tail: Buffer.alloc(0), prefix: Buffer.alloc(0) };
+  for await (const chunk of reader) inspectChunk(chunk, state);
+  return state.prefix;
+}
+
 function archiveTypeIsNested(prefix) {
   return ['zip', '7z', 'rar', 'gzip', 'bzip2', 'xz', 'tar', 'cpio', 'iso', 'cab', 'zstd', 'lz4']
     .includes(detectType(prefix));
@@ -352,6 +358,17 @@ function verifyTarHeader(header) {
     actual += index >= 148 && index < 156 ? 0x20 : header[index];
   }
   if (actual !== expected) throw new Error('Invalid TAR header checksum');
+}
+
+function looksLikeTarHeader(header) {
+  if (header.length !== 512) return false;
+  if (header.subarray(257, 262).toString('ascii') === 'ustar') return true;
+  try {
+    verifyTarHeader(header);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function inspectTar(stream, compressedSize = null, depth = 0) {
@@ -729,7 +746,12 @@ async function inspectNestedArchive(filePath, type, depth) {
     if (prefix?.toString('ascii', 0, 6) === '070701' || prefix?.toString('ascii', 0, 6) === '070702') {
       await inspectCpio(reader, stat.size, depth);
     } else {
-      await inspectTar(reader, stat.size, depth);
+      const header = await reader.peek(512);
+      if (header && looksLikeTarHeader(header)) {
+        await inspectTar(reader, stat.size, depth);
+      } else {
+        await inspectReaderContents(reader);
+      }
     }
   } else {
     throw new Error('Nested archives are not supported for safe inspection');

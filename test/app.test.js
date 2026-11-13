@@ -583,6 +583,7 @@ test('gzip-compressed CPIO files inside ISO images are inspected', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'simple-file-store-cpio-'));
   const safePath = path.join(directory, 'safe.iso');
   const infectedPath = path.join(directory, 'infected.iso');
+  const nestedGzipPath = path.join(directory, 'nested-gzip.iso');
   const eicar = Buffer.from('X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*');
   try {
     await fs.writeFile(safePath, makeIso('CORE.GZ', zlib.gzipSync(makeCpio('etc/config', 'safe initramfs'))));
@@ -593,6 +594,17 @@ test('gzip-compressed CPIO files inside ISO images are inspected', async () => {
     const infectedResult = await scanFile(infectedPath, 'infected.iso', true);
     assert.equal(infectedResult.status, 'INFECTED');
     assert.match(infectedResult.reason, /EICAR/);
+
+    await fs.writeFile(nestedGzipPath, makeIso('CORE.GZ', makeCpio('usr/lib/module.gz',
+      zlib.gzipSync('Tiny Core compressed module data'))));
+    const nestedGzipResult = await scanFile(nestedGzipPath, 'nested-gzip.iso', true);
+    assert.equal(nestedGzipResult.status, 'SCAN_PASSED');
+
+    await fs.writeFile(nestedGzipPath, makeIso('CORE.GZ', makeCpio('usr/lib/module.gz',
+      zlib.gzipSync(eicar))));
+    const nestedGzipInfectedResult = await scanFile(nestedGzipPath, 'nested-gzip.iso', true);
+    assert.equal(nestedGzipInfectedResult.status, 'INFECTED');
+    assert.match(nestedGzipInfectedResult.reason, /EICAR/);
   } finally {
     await fs.rm(directory, { recursive: true, force: true });
   }
