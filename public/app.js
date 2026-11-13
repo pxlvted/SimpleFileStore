@@ -1172,12 +1172,26 @@ $('#otp-disable').addEventListener('click', async () => {
 function closeDeleteAccountDialog() {
   $('#delete-account-dialog').classList.add('hidden');
   $('#delete-account-password').value = '';
+  $('#delete-account-code').value = '';
 }
 
-$('#delete-account-button').addEventListener('click', () => {
+$('#delete-account-button').addEventListener('click', async () => {
   $('#profile-menu').classList.add('hidden');
   $('#delete-account-dialog').classList.remove('hidden');
-  $('#delete-account-password').focus();
+  const button = $('#delete-account-confirm');
+  button.disabled = true;
+  let settingsLoaded = false;
+  try {
+    const result = await api('/api/auth/otp');
+    $('#delete-account-otp').classList.toggle('hidden', !result.enabled);
+    $('#delete-account-code').required = result.enabled;
+    settingsLoaded = true;
+    (result.enabled ? $('#delete-account-code') : $('#delete-account-password')).focus();
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = !settingsLoaded;
+  }
 });
 $('#delete-account-close').addEventListener('click', closeDeleteAccountDialog);
 $('#delete-account-cancel').addEventListener('click', closeDeleteAccountDialog);
@@ -1188,7 +1202,10 @@ $('#delete-account-form').addEventListener('submit', async (event) => {
   try {
     await api('/api/auth/delete', {
       method: 'POST',
-      body: JSON.stringify({ password: $('#delete-account-password').value })
+      body: JSON.stringify({
+        password: $('#delete-account-password').value,
+        code: $('#delete-account-code').value
+      })
     });
     closeDeleteAccountDialog();
     showAuth();

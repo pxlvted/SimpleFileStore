@@ -279,7 +279,7 @@ before(async () => {
       DATA_DIRECTORY: dataDirectory,
       SESSION_SECRET: crypto.randomBytes(48).toString('hex'),
       WHITELISTFEATURE: 'TRUE',
-      WHITELIST: 'alice,bob,mfa-user',
+      WHITELIST: 'alice,bob,mfa-user,otp-delete-user',
       COOKIE_SECURE: 'false',
       MAX_FILE_SIZE_MB: '2',
       MAX_STORAGE_MB: '1',
@@ -714,6 +714,40 @@ test('authenticator setup, sign-in, rotation, and disable require valid codes', 
   assert.equal(disable.status, 200);
   assert.deepEqual(await json(disable), { enabled: false });
   assert.deepEqual(await json(await request('/api/auth/otp', {}, authenticated)), { enabled: false });
+
+  const deletionSession = await createSession('otp-delete-user');
+  const deletionSetupResponse = await request('/api/auth/otp/setup', {
+    method: 'POST',
+    body: JSON.stringify({})
+  }, deletionSession);
+  const deletionSetup = await json(deletionSetupResponse);
+  const deletionSetupCounter = Math.floor(Date.now() / 30000);
+  const deletionOtpConfirmation = await request('/api/auth/otp/confirm', {
+    method: 'POST',
+    body: JSON.stringify({ code: authenticatorCode(deletionSetup.secret, deletionSetupCounter - 1) })
+  }, deletionSession);
+  assert.equal(deletionOtpConfirmation.status, 200);
+
+  const missingDeletionCode = await request('/api/auth/delete', {
+    method: 'POST',
+    body: JSON.stringify({ password: 'correct horse battery staple' })
+  }, deletionSession);
+  assert.equal(missingDeletionCode.status, 401);
+  const invalidDeletionCode = await request('/api/auth/delete', {
+    method: 'POST',
+    body: JSON.stringify({ password: 'correct horse battery staple', code: 'invalid' })
+  }, deletionSession);
+  assert.equal(invalidDeletionCode.status, 401);
+
+  const deletionCounter = Math.floor(Date.now() / 30000);
+  const verifiedDeletion = await request('/api/auth/delete', {
+    method: 'POST',
+    body: JSON.stringify({
+      password: 'correct horse battery staple',
+      code: authenticatorCode(deletionSetup.secret, deletionCounter)
+    })
+  }, deletionSession);
+  assert.equal(verifiedDeletion.status, 200);
 });
 
 test('nested archives are rejected when nested inspection is disabled', async () => {

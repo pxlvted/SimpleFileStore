@@ -584,6 +584,16 @@ app.post('/api/auth/delete', requireAuth, async (req, res, next) => {
     }
     loginAttempts.delete(attemptKey);
 
+    const userOtp = db.prepare('SELECT otp_secret FROM users WHERE id=?').get(userId);
+    if (userOtp.otp_secret) {
+      const otpAttemptKey = recordOtpActionAttempt(userId);
+      if (!consumeOtp(userId, decryptOtpSecret(userOtp.otp_secret), req.body?.code)) {
+        audit(userId, 'account_deletion_otp_failed');
+        throw error(401, 'Enter a valid authenticator code to delete your account');
+      }
+      loginAttempts.delete(otpAttemptKey);
+    }
+
     await Promise.all([...(activeScanJobs.get(userId) || [])]);
     const scanJobs = db.prepare('SELECT staging_key FROM scan_jobs WHERE user_id=?').all(userId);
     const quarantineRecords = db.prepare('SELECT storage_key FROM quarantine_records WHERE user_id=?').all(userId);

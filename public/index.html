@@ -158,6 +158,10 @@
       <form id="delete-account-form">
         <label for="delete-account-password">Password</label>
         <input id="delete-account-password" name="password" type="password" autocomplete="current-password" required maxlength="1024">
+        <div id="delete-account-otp" class="hidden">
+          <label for="delete-account-code">Authenticator code</label>
+          <input id="delete-account-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6">
+        </div>
         <footer><button class="button secondary" id="delete-account-cancel" type="button">Cancel</button><button class="button danger" id="delete-account-confirm" type="submit">Confirm deletion</button></footer>
       </form>
     </section>
