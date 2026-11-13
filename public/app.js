@@ -1090,29 +1090,141 @@ $('#logout-button').addEventListener('click', async () => {
   showAuth();
 });
 
-async function loadOtpSettings() {
+const settingsCategories = [
+  {
+    id: 'security',
+    label: 'Security',
+    render: renderSecuritySettings
+  }
+];
+
+let currentSettingsCategory = null;
+
+function renderSettingsNav() {
+  const nav = $('#settings-nav');
+  nav.replaceChildren();
+  settingsCategories.forEach((cat) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'settings-nav-item';
+    btn.textContent = cat.label;
+    btn.dataset.category = cat.id;
+    btn.onclick = () => switchSettingsCategory(cat.id);
+    nav.append(btn);
+  });
+}
+
+function switchSettingsCategory(categoryId) {
+  const category = settingsCategories.find((c) => c.id === categoryId);
+  if (!category) return;
+  currentSettingsCategory = category;
+  $('#settings-nav').querySelectorAll('.settings-nav-item').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.category === categoryId);
+  });
+  const content = $('#settings-content');
+  content.replaceChildren();
+  category.render(content);
+}
+
+async function renderSecuritySettings(container) {
   const result = await api('/api/auth/otp');
-  $('#otp-status').textContent = result.enabled
+  const section = document.createElement('section');
+  section.innerHTML = `
+    <h3>Authenticator verification</h3>
+    <p id="otp-status" class="muted"></p>
+    <div id="otp-disabled-actions"><button class="button primary" id="otp-enable" type="button">Set up authenticator</button></div>
+    <div id="otp-enabled-actions" class="hidden">
+      <label for="otp-rotate-code">Current authenticator code to rotate secret</label>
+      <div class="otp-action-row"><input id="otp-rotate-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6"><button class="button secondary" id="otp-rotate" type="button">Rotate secret</button></div>
+      <label for="otp-disable-code">Current authenticator code to turn off</label>
+      <div class="otp-action-row"><input id="otp-disable-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6"><button class="button danger" id="otp-disable" type="button">Turn off</button></div>
+    </div>
+    <h3>Protect permanent trash deletion</h3>
+    <p id="trash-delete-otp-status" class="muted"></p>
+    <div id="trash-delete-otp-disabled">
+      <button class="button secondary" id="trash-delete-otp-enable" type="button">Require authenticator code</button>
+    </div>
+    <div id="trash-delete-otp-enabled" class="hidden">
+      <label for="trash-delete-otp-code">Current authenticator code to turn off protection</label>
+      <div class="otp-action-row"><input id="trash-delete-otp-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6"><button class="button danger" id="trash-delete-otp-disable" type="button">Turn off protection</button></div>
+    </div>
+  `;
+  container.append(section);
+
+  const status = section.querySelector('#otp-status');
+  status.textContent = result.enabled
     ? 'Authenticator verification is on. Use your authenticator app when signing in.'
     : 'Authenticator verification is off.';
-  $('#otp-disabled-actions').classList.toggle('hidden', result.enabled);
-  $('#otp-enabled-actions').classList.toggle('hidden', !result.enabled);
-  $('#otp-rotate-code').value = '';
-  $('#otp-disable-code').value = '';
-  $('#trash-delete-otp-status').textContent = result.trashDeletionOtpRequired
+  section.querySelector('#otp-disabled-actions').classList.toggle('hidden', result.enabled);
+  section.querySelector('#otp-enabled-actions').classList.toggle('hidden', !result.enabled);
+  section.querySelector('#otp-rotate-code').value = '';
+  section.querySelector('#otp-disable-code').value = '';
+
+  const trashStatus = section.querySelector('#trash-delete-otp-status');
+  trashStatus.textContent = result.trashDeletionOtpRequired
     ? 'A current authenticator code is required to permanently delete items from Trash or empty Trash.'
     : result.enabled
       ? 'Permanently deleting items from Trash does not require an authenticator code.'
       : 'Enable authenticator verification before protecting permanent trash deletion.';
-  $('#trash-delete-otp-disabled').classList.toggle('hidden', result.trashDeletionOtpRequired);
-  $('#trash-delete-otp-enabled').classList.toggle('hidden', !result.trashDeletionOtpRequired);
-  $('#trash-delete-otp-enable').disabled = !result.enabled;
-  $('#trash-delete-otp-code').value = '';
+  section.querySelector('#trash-delete-otp-disabled').classList.toggle('hidden', result.trashDeletionOtpRequired);
+  section.querySelector('#trash-delete-otp-enabled').classList.toggle('hidden', !result.trashDeletionOtpRequired);
+  section.querySelector('#trash-delete-otp-enable').disabled = !result.enabled;
+  section.querySelector('#trash-delete-otp-code').value = '';
+
+  section.querySelector('#otp-enable').addEventListener('click', () => beginOtpSetup(false));
+  section.querySelector('#otp-rotate').addEventListener('click', () => beginOtpSetup(true));
+  section.querySelector('#otp-disable').addEventListener('click', async () => {
+    const button = section.querySelector('#otp-disable');
+    button.disabled = true;
+    try {
+      await api('/api/auth/otp/disable', {
+        method: 'POST',
+        body: JSON.stringify({ code: section.querySelector('#otp-disable-code').value })
+      });
+      if (currentSettingsCategory) currentSettingsCategory.render($('#settings-content'));
+      toast('Authenticator verification is off.');
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  });
+  section.querySelector('#trash-delete-otp-enable').addEventListener('click', async () => {
+    const button = section.querySelector('#trash-delete-otp-enable');
+    button.disabled = true;
+    try {
+      await api('/api/auth/trash-deletion-protection', {
+        method: 'POST',
+        body: JSON.stringify({ enabled: true })
+      });
+      if (currentSettingsCategory) currentSettingsCategory.render($('#settings-content'));
+      toast('Authenticator verification is required for permanent trash deletion.');
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  });
+  section.querySelector('#trash-delete-otp-disable').addEventListener('click', async () => {
+    const button = section.querySelector('#trash-delete-otp-disable');
+    button.disabled = true;
+    try {
+      await api('/api/auth/trash-deletion-protection', {
+        method: 'POST',
+        body: JSON.stringify({ enabled: false, code: section.querySelector('#trash-delete-otp-code').value })
+      });
+      if (currentSettingsCategory) currentSettingsCategory.render($('#settings-content'));
+      toast('Authenticator protection for permanent trash deletion is off.');
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  });
 }
 
 function clearOtpEnrollment() {
   $('#otp-enrollment').classList.add('hidden');
-  $('#otp-settings').classList.remove('hidden');
   $('#otp-qr').removeAttribute('src');
   $('#otp-secret').textContent = '';
   $('#otp-confirm-code').value = '';
@@ -1127,7 +1239,6 @@ async function beginOtpSetup(rotation) {
       method: 'POST',
       body: JSON.stringify(code ? { code } : {})
     });
-    $('#otp-settings').classList.add('hidden');
     $('#otp-enrollment').classList.remove('hidden');
     $('#otp-enrollment-instructions').textContent = rotation
       ? 'Scan this new QR code with your authenticator app and confirm it with a code from the new setup. Your existing authenticator remains active until confirmation.'
@@ -1146,19 +1257,16 @@ $('#settings-button').addEventListener('click', async () => {
   $('#profile-menu').classList.add('hidden');
   clearOtpEnrollment();
   $('#settings-dialog').classList.remove('hidden');
-  try { await loadOtpSettings(); }
-  catch (error) { toast(error.message, true); }
+  renderSettingsNav();
+  switchSettingsCategory('security');
 });
 $('#settings-close').addEventListener('click', () => {
   clearOtpEnrollment();
   $('#settings-dialog').classList.add('hidden');
 });
-$('#otp-enable').addEventListener('click', () => beginOtpSetup(false));
-$('#otp-rotate').addEventListener('click', () => beginOtpSetup(true));
 $('#otp-enrollment-cancel').addEventListener('click', async () => {
   clearOtpEnrollment();
-  try { await loadOtpSettings(); }
-  catch (error) { toast(error.message, true); }
+  if (currentSettingsCategory) currentSettingsCategory.render($('#settings-content'));
 });
 $('#otp-confirm').addEventListener('click', async () => {
   const button = $('#otp-confirm');
@@ -1169,7 +1277,7 @@ $('#otp-confirm').addEventListener('click', async () => {
       body: JSON.stringify({ code: $('#otp-confirm-code').value })
     });
     clearOtpEnrollment();
-    await loadOtpSettings();
+    if (currentSettingsCategory) currentSettingsCategory.render($('#settings-content'));
     toast('Authenticator verification is enabled.');
   } catch (error) {
     toast(error.message, true);
@@ -1177,55 +1285,7 @@ $('#otp-confirm').addEventListener('click', async () => {
     button.disabled = false;
   }
 });
-$('#otp-disable').addEventListener('click', async () => {
-  const button = $('#otp-disable');
-  button.disabled = true;
-  try {
-    await api('/api/auth/otp/disable', {
-      method: 'POST',
-      body: JSON.stringify({ code: $('#otp-disable-code').value })
-    });
-    await loadOtpSettings();
-    toast('Authenticator verification is off.');
-  } catch (error) {
-    toast(error.message, true);
-  } finally {
-    button.disabled = false;
-  }
-});
 
-$('#trash-delete-otp-enable').addEventListener('click', async () => {
-  const button = $('#trash-delete-otp-enable');
-  button.disabled = true;
-  try {
-    await api('/api/auth/trash-deletion-protection', {
-      method: 'POST',
-      body: JSON.stringify({ enabled: true })
-    });
-    await loadOtpSettings();
-    toast('Authenticator verification is required for permanent trash deletion.');
-  } catch (error) {
-    toast(error.message, true);
-  } finally {
-    button.disabled = false;
-  }
-});
-$('#trash-delete-otp-disable').addEventListener('click', async () => {
-  const button = $('#trash-delete-otp-disable');
-  button.disabled = true;
-  try {
-    await api('/api/auth/trash-deletion-protection', {
-      method: 'POST',
-      body: JSON.stringify({ enabled: false, code: $('#trash-delete-otp-code').value })
-    });
-    await loadOtpSettings();
-    toast('Authenticator protection for permanent trash deletion is off.');
-  } catch (error) {
-    toast(error.message, true);
-  } finally {
-    button.disabled = false;
-  }
-});
 
 function closeDeleteAccountDialog() {
   $('#delete-account-dialog').classList.add('hidden');
