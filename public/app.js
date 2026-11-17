@@ -306,6 +306,9 @@ function fileNameCell(name, folder, itemId, status, detection) {
 function actionsForFolder(folder) {
   const actions = document.createElement('div');
   actions.className = 'row-actions';
+  if (folder.permissions?.canRead) {
+    actions.append(actionButton('download', 'download', folder.id, 'Download folder as ZIP'));
+  }
   if (folder.isOwner) {
     actions.append(actionButton('move', 'move-folder', folder.id, 'Move folder'));
     actions.append(actionButton('edit', 'rename-folder', folder.id, 'Rename folder'));
@@ -740,8 +743,10 @@ async function handleAction(event) {
     if (action === 'move-folder') return openMoveDialog('folder', folder);
     if (action === 'download') {
       const link = document.createElement('a');
-      link.href = `/api/files/${encodeURIComponent(itemId)}/download`;
-      link.download = file?.name || '';
+      link.href = folder
+        ? `/api/folders/${encodeURIComponent(itemId)}/download`
+        : `/api/files/${encodeURIComponent(itemId)}/download`;
+      link.download = folder ? `${folder.name}.zip` : file?.name || '';
       document.body.append(link);
       link.click();
       link.remove();

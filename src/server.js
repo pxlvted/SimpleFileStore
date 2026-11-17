@@ -4,6 +4,7 @@ import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Transform } from 'node:stream';
 import { Worker } from 'node:worker_threads';
+import { createZipStream } from './zip.js';
 import Busboy from 'busboy';
 import express from 'express';
 import helmet from 'helmet';
@@ -1298,6 +1299,87 @@ app.post('/api/upload', requireAuth, async (req, res, next) => {
       activeUploads -= 1;
       activeUploadReservation -= uploadReservation.bytes;
     }
+  }
+});
+
+app.get('/api/folders/:id/download', requireAuth, async (req, res, next) => {
+  try {
+    const access = getFolderAccess(req.user.id, req.params.id);
+    ensurePermission(access, 'canRead');
+    const folders = db.prepare(`WITH RECURSIVE tree(id, parent_id, name, created_at, depth) AS (
+      SELECT id, parent_id, name, created_at, 0 FROM folders
+      WHERE id=? AND user_id=? AND deleted_at IS NULL
+      UNION ALL
+      SELECT f.id, f.parent_id, f.name, f.created_at, tree.depth + 1
+      FROM folders f JOIN tree ON f.parent_id=tree.id
+      WHERE f.user_id=? AND f.deleted_at IS NULL AND tree.depth < 100
+    ) SELECT * FROM tree ORDER BY depth, name COLLATE NOCASE`)
+      .all(access.folder.id, access.ownerId, access.ownerId);
+    if (folders.some((folder) => folder.depth === 100
+      && db.prepare('SELECT 1 FROM folders WHERE parent_id=? AND user_id=? AND deleted_at IS NULL')
+        .get(folder.id, access.ownerId))) {
+      throw error(413, 'Folder hierarchy is too deep to archive');
+    }
+
+    const accessibleFolders = [];
+    const folderPaths = new Map();
+    for (const folder of folders) {
+      if (folder.id !== access.folder.id && !folderPaths.has(folder.parent_id)) continue;
+      if (folder.id !== access.folder.id) {
+        let folderAccess;
+        try {
+          folderAccess = getFolderAccess(req.user.id, folder.id);
+        } catch (folderError) {
+          if (folderError.status === 403 || folderError.status === 404) continue;
+          throw folderError;
+        }
+        if (!folderAccess.permissions.canRead) continue;
+      }
+      const folderPath = folder.id === access.folder.id
+        ? folder.name
+        : `${folderPaths.get(folder.parent_id)}/${folder.name}`;
+      folderPaths.set(folder.id, folderPath);
+      accessibleFolders.push({
+        name: `${folderPath}/`,
+        directory: true,
+        modifiedAt: folder.created_at
+      });
+    }
+
+    const accessibleFolderIds = [...folderPaths.keys()];
+    const files = [];
+    for (let index = 0; index < accessibleFolderIds.length; index += 900) {
+      const batch = accessibleFolderIds.slice(index, index + 900);
+      files.push(...db.prepare(`SELECT * FROM files WHERE user_id=? AND folder_id IN (${batch.map(() => '?').join(',')})
+        AND deleted_at IS NULL AND status='SCAN_PASSED' AND storage_key IS NOT NULL`)
+        .all(access.ownerId, ...batch));
+    }
+    const entries = [...accessibleFolders];
+    for (const file of files) {
+      const fileAccess = getFileAccess(req.user.id, file.id);
+      if (!fileAccess.permissions.canRead) continue;
+      const filePath = path.join(config.storageDirectory, access.ownerId, file.storage_key);
+      await fs.promises.access(filePath, fs.constants.R_OK);
+      entries.push({
+        name: `${folderPaths.get(file.folder_id)}/${file.name}`,
+        filePath,
+        size: file.size,
+        modifiedAt: file.modified_at
+      });
+      db.prepare('UPDATE files SET last_accessed_at=? WHERE id=?').run(now(), file.id);
+    }
+
+    const zipStream = createZipStream(entries);
+    const encodedName = encodeURIComponent(`${access.folder.name}.zip`).replace(/[!'()*]/g, (character) =>
+      `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodedName}`);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    await pipeline(zipStream, res);
+  } catch (err) {
+    if (err instanceof RangeError) err = error(413, err.message);
+    if (res.headersSent) return res.destroy(err);
+    next(err);
   }
 });
 

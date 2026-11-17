@@ -4,6 +4,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { Worker } from 'node:worker_threads';
 import crypto from 'node:crypto';
 import Database from 'better-sqlite3';
+import yauzl from 'yauzl';
 import fs from 'node:fs/promises';
 import zlib from 'node:zlib';
 import net from 'node:net';
@@ -201,6 +202,42 @@ async function json(response) {
   return response.json();
 }
 
+async function readZipEntries(buffer) {
+  const zipfile = await new Promise((resolve, reject) => {
+    yauzl.fromBuffer(buffer, { lazyEntries: true }, (error, archive) => {
+      if (error) reject(error);
+      else resolve(archive);
+    });
+  });
+  const entries = new Map();
+  await new Promise((resolve, reject) => {
+    zipfile.on('error', reject);
+    zipfile.on('end', resolve);
+    zipfile.on('entry', (entry) => {
+      if (entry.fileName.endsWith('/')) {
+        entries.set(entry.fileName, null);
+        zipfile.readEntry();
+        return;
+      }
+      zipfile.openReadStream(entry, (error, stream) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        const chunks = [];
+        stream.on('data', (chunk) => chunks.push(chunk));
+        stream.on('error', reject);
+        stream.on('end', () => {
+          entries.set(entry.fileName, Buffer.concat(chunks));
+          zipfile.readEntry();
+        });
+      });
+    });
+    zipfile.readEntry();
+  });
+  return entries;
+}
+
 async function createSession(username) {
   const password = 'correct horse battery staple';
   const registration = await request('/api/auth/register', {
@@ -349,6 +386,14 @@ test('authentication, isolated storage, scanning, editing, and quarantine', { ti
   const nestedPassedFile = await waitForStatus(alice, nestedUpload.id, 'SCAN_PASSED', uploadedDirectory.id);
   assert.equal(nestedPassedFile.folderId, uploadedDirectory.id);
 
+  const folderDownload = await request(`/api/folders/${folder.id}/download`, {}, alice);
+  assert.equal(folderDownload.status, 200);
+  assert.match(folderDownload.headers.get('content-type'), /application\/zip/);
+  assert.match(folderDownload.headers.get('content-disposition'), /filename\*=UTF-8''Documents\.zip/);
+  const archivedEntries = await readZipEntries(Buffer.from(await folderDownload.arrayBuffer()));
+  assert.equal(archivedEntries.get('Documents/notes.txt').toString(), 'first version');
+  assert.equal(archivedEntries.get('Documents/Photos/photo.txt').toString(), 'nested file');
+
   const download = await request(`/api/files/${uploaded.id}/download`, {}, alice);
   assert.equal(download.status, 200);
   assert.equal(await download.text(), 'first version');
@@ -489,6 +534,12 @@ test('authentication, isolated storage, scanning, editing, and quarantine', { ti
     body: JSON.stringify({ username: 'bob', permissions: {} })
   }, alice);
   assert.equal(readonlyFolderShare.status, 201);
+  const readonlyFolderDownload = await request(`/api/folders/${folder.id}/download`, {}, bob);
+  assert.equal(readonlyFolderDownload.status, 200);
+  const sharedArchiveEntries = await readZipEntries(Buffer.from(await readonlyFolderDownload.arrayBuffer()));
+  assert.equal(sharedArchiveEntries.get('Documents/notes.txt').toString(), 'edited version');
+  assert.equal(sharedArchiveEntries.get('Documents/Photos/photo.txt').toString(), 'nested file');
+  assert.ok(sharedArchiveEntries.has('Documents/Nested/'));
   const readonlyForm = new FormData();
   readonlyForm.append('folderId', folder.id);
   readonlyForm.append('file', new Blob(['not allowed']), 'readonly.txt');
@@ -564,6 +615,8 @@ test('authentication, isolated storage, scanning, editing, and quarantine', { ti
 
   const crossUserDownload = await request(`/api/files/${uploaded.id}/download`, {}, bob);
   assert.equal(crossUserDownload.status, 404);
+  const crossUserFolderDownload = await request(`/api/folders/${folder.id}/download`, {}, bob);
+  assert.equal(crossUserFolderDownload.status, 404);
   const crossUserMove = await request(`/api/files/${uploaded.id}`, {
     method: 'PATCH',
     body: JSON.stringify({ starred: true })
